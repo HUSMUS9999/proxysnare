@@ -144,18 +144,13 @@ Empirically measured against the live ProxySnare strict demo server (`node bin/p
 
 ## Architecture
 
-```mermaid
-sequenceDiagram
-    participant B as Genuine Browser (+ /__proxysnare/guard.js)
-    participant P as ProxySnare Shield / Middleware
-    participant R as Intercepting Proxy / Repeater
-    B->>P: POST /__proxysnare/handshake
-    P-->>B: Ephemeral sessionKey (imported non-extractable) + canary_0
-    B->>P: POST /api/transfer (seq=1, nonce_1, ts, canary_0, HMAC proof)
-    P-->>B: 200 OK (X-ProxySnare-Score: 0, X-PS-Next-Canary: canary_1)
-    R->>P: Replay captured POST /api/transfer (nonce_1, canary_0) OR edited body
-    P-->>R: 403 REPEATER_OR_PROXY_BLOCKED (score 24-32/4)
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/proxysnare-arch-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="assets/proxysnare-arch-light.svg" />
+    <img src="assets/proxysnare-arch-light.svg" alt="ProxySnare Protocol-Level Anti-Repeater Architecture" width="100%" />
+  </picture>
+</p>
 
 ---
 

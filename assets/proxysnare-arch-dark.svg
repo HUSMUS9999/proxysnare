@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="344" viewBox="0 0 880 344" role="img" aria-label="ProxySnare Protocol-Level Anti-Repeater Sequence">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#8B949E"/>
+    </marker>
+    <marker id="arr-acc" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#38BDF8"/>
+    </marker>
+    <marker id="arr-ok" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#22C55E"/>
+    </marker>
+    <marker id="arr-deny" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#F87171"/>
+    </marker>
+    <style>
+      .card { fill: #161B22; stroke: #30363D; stroke-width: 1.25; }
+      .sub  { fill: #0D1117; stroke: #30363D; stroke-width: 1.15; }
+      .acc  { fill: #0C2D48; stroke: #38BDF8; stroke-width: 1.35; }
+      .ok   { fill: #052E16; stroke: #22C55E; stroke-width: 1.35; }
+      .deny { fill: #2A1215; stroke: #F87171; stroke-width: 1.35; }
+      .t    { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12.5px; font-weight: 700; fill: #E6EDF3; text-anchor: middle; }
+      .tl   { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12px; font-weight: 700; fill: #E6EDF3; text-anchor: start; }
+      .b    { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 10.6px; fill: #C9D1D9; text-anchor: middle; }
+      .m    { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 10px; fill: #8B949E; text-anchor: middle; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10.2px; font-weight: 600; fill: #7DD3FC; text-anchor: middle; }
+      .ok-t { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 11.2px; font-weight: 700; fill: #86EFAC; text-anchor: middle; }
+      .dn-t { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 11.2px; font-weight: 700; fill: #FCA5A5; text-anchor: middle; }
+      .kicker { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 9.5px; font-weight: 700; letter-spacing: 0.7px; fill: #7DD3FC; text-anchor: middle; }
+      .e    { fill: none; stroke: #8B949E; stroke-width: 1.35; }
+      .ea   { fill: none; stroke: #38BDF8; stroke-width: 1.45; }
+      .eok  { fill: none; stroke: #22C55E; stroke-width: 1.45; }
+      .edn  { fill: none; stroke: #F87171; stroke-width: 1.45; }
+    </style>
+  </defs>
+
+  <!-- 3 Vertical Swimlanes -->
+  <line x1="138" y1="70" x2="138" y2="324" stroke="#21262D" stroke-width="2" stroke-dasharray="4 4"/>
+  <line x1="440" y1="70" x2="440" y2="324" stroke="#38BDF8" stroke-width="2" stroke-dasharray="4 4" opacity="0.55"/>
+  <line x1="742" y1="70" x2="742" y2="324" stroke="#F87171" stroke-width="2" stroke-dasharray="4 4" opacity="0.55"/>
+
+  <!-- Swimlane Headers -->
+  <rect class="card" x="24" y="16" width="228" height="52" rx="8"/>
+  <text class="t" x="138" y="39">Genuine Browser</text>
+  <text class="m" x="138" y="56">+ /__proxysnare/guard.js (WebCrypto)</text>
+
+  <rect class="acc" x="326" y="16" width="228" height="52" rx="8"/>
+  <text class="t" x="440" y="39">ProxySnare Shield</text>
+  <text class="m" x="440" y="56">Middleware / Reverse Proxy / Python</text>
+
+  <rect class="deny" x="628" y="16" width="228" height="52" rx="8"/>
+  <text class="dn-t" x="742" y="39">Intercepting Proxy / Repeater</text>
+  <text class="m" x="742" y="56">Replay · Body Edit · Intercept Hold</text>
+
+  <!-- Step 1: Handshake -->
+  <rect class="sub" x="192" y="84" width="194" height="22" rx="5"/>
+  <text class="mono" x="289" y="99">POST /__proxysnare/handshake</text>
+  <circle cx="138" cy="116" r="10.5" fill="#38BDF8"/>
+  <text x="138" y="120" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#fff" text-anchor="middle">1</text>
+  <line class="ea" x1="150" y1="116" x2="426" y2="116" marker-end="url(#arr-acc)"/>
+
+  <!-- Step 2: Ephemeral Key + Canary_0 -->
+  <rect class="sub" x="166" y="132" width="246" height="22" rx="5"/>
+  <text class="m" x="289" y="147">sessionKey (extractable: false) + canary_0</text>
+  <circle cx="440" cy="164" r="10.5" fill="#38BDF8"/>
+  <text x="440" y="168" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#fff" text-anchor="middle">2</text>
+  <line class="ea" x1="428" y1="164" x2="152" y2="164" marker-end="url(#arr-acc)"/>
+
+  <!-- Step 3: Genuine Signed Request + Canary Rotation -->
+  <rect class="sub" x="160" y="182" width="258" height="24" rx="5"/>
+  <text class="mono" x="289" y="198">POST /api/* (seq=1, nonce, canary_0, HMAC)</text>
+  <circle cx="138" cy="216" r="10.5" fill="#22C55E"/>
+  <text x="138" y="220" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#fff" text-anchor="middle">3</text>
+  <line class="eok" x1="150" y1="216" x2="426" y2="216" marker-end="url(#arr-ok)"/>
+  <rect class="ok" x="180" y="226" width="218" height="26" rx="6"/>
+  <text class="ok-t" x="289" y="243">200 OK · X-PS-Next-Canary: canary_1</text>
+
+  <!-- Step 4: Repeater Replay / Tamper / Hold -> 403 -->
+  <rect class="sub" x="462" y="248" width="258" height="24" rx="5"/>
+  <text class="m" x="591" y="264">Replay · stale canary_0 · body edit · &gt;8s hold</text>
+  <circle cx="742" cy="282" r="10.5" fill="#F87171"/>
+  <text x="742" y="286" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#fff" text-anchor="middle">4</text>
+  <line class="edn" x1="730" y1="282" x2="454" y2="282" marker-end="url(#arr-deny)"/>
+  <rect class="deny" x="478" y="294" width="226" height="28" rx="6"/>
+  <text class="dn-t" x="591" y="312">403 REPEATER_OR_PROXY_BLOCKED</text>
+</svg>
