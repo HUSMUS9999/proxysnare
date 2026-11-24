@@ -1,0 +1,246 @@
+{
+  "version": "1.0.0",
+  "timestamp": "2026-11-24T12:04:26.893Z",
+  "nodeVersion": "v22.23.2",
+  "methodology": "Real local TCP/HTTP sockets; 2 genuine browser requests + 5 live attack scenarios + 300 sequential POST latency benchmark per defense.",
+  "results": [
+    {
+      "id": "baseline",
+      "name": "Unprotected Node.js HTTP API",
+      "clientJsRequired": false,
+      "worksForNonBrowserApis": true,
+      "genuineClick1Ok": true,
+      "genuineClick2Ok": true,
+      "falsePositives": 0,
+      "attacks": {
+        "crossOriginCsrfBlocked": false,
+        "exactReplayBlocked": false,
+        "bodyTamperBlocked": false,
+        "interceptHold8sBlocked": false,
+        "proxyStrippedBlocked": false,
+        "burstReplayFloodBlocked": false
+      },
+      "attacksBlocked": "0/6",
+      "statuses": {
+        "click1": 200,
+        "click2": 200,
+        "crossOriginCsrf": 200,
+        "exactReplay": 200,
+        "bodyTamper": 200,
+        "interceptHold8s": 200,
+        "proxyStripped": 200,
+        "burstFloodBlocked": false
+      },
+      "perf": {
+        "requests": 300,
+        "medianMs": 0.187,
+        "p95Ms": 0.29,
+        "reqPerSec": 5016
+      }
+    },
+    {
+      "id": "csrf_double_submit",
+      "name": "Double-Submit CSRF Guard",
+      "clientJsRequired": false,
+      "worksForNonBrowserApis": false,
+      "genuineClick1Ok": true,
+      "genuineClick2Ok": true,
+      "falsePositives": 0,
+      "attacks": {
+        "crossOriginCsrfBlocked": true,
+        "exactReplayBlocked": false,
+        "bodyTamperBlocked": false,
+        "interceptHold8sBlocked": false,
+        "proxyStrippedBlocked": false,
+        "burstReplayFloodBlocked": false
+      },
+      "attacksBlocked": "1/6",
+      "statuses": {
+        "click1": 200,
+        "click2": 200,
+        "crossOriginCsrf": 403,
+        "exactReplay": 200,
+        "bodyTamper": 200,
+        "interceptHold8s": 200,
+        "proxyStripped": 200,
+        "burstFloodBlocked": false
+      },
+      "perf": {
+        "requests": 300,
+        "medianMs": 0.153,
+        "p95Ms": 0.239,
+        "reqPerSec": 6218
+      }
+    },
+    {
+      "id": "rate_limiter",
+      "name": "Rate Limiter (60 req/min/IP)",
+      "clientJsRequired": false,
+      "worksForNonBrowserApis": true,
+      "genuineClick1Ok": true,
+      "genuineClick2Ok": true,
+      "falsePositives": 0,
+      "attacks": {
+        "crossOriginCsrfBlocked": false,
+        "exactReplayBlocked": false,
+        "bodyTamperBlocked": false,
+        "interceptHold8sBlocked": false,
+        "proxyStrippedBlocked": false,
+        "burstReplayFloodBlocked": true
+      },
+      "attacksBlocked": "1/6",
+      "statuses": {
+        "click1": 200,
+        "click2": 200,
+        "crossOriginCsrf": 200,
+        "exactReplay": 200,
+        "bodyTamper": 200,
+        "interceptHold8s": 200,
+        "proxyStripped": 200,
+        "burstFloodBlocked": true
+      },
+      "perf": {
+        "requests": 300,
+        "medianMs": 0.163,
+        "p95Ms": 0.251,
+        "reqPerSec": 5771
+      }
+    },
+    {
+      "id": "fetch_metadata",
+      "name": "Fetch Metadata + Origin Guard",
+      "clientJsRequired": false,
+      "worksForNonBrowserApis": false,
+      "genuineClick1Ok": true,
+      "genuineClick2Ok": true,
+      "falsePositives": 0,
+      "attacks": {
+        "crossOriginCsrfBlocked": true,
+        "exactReplayBlocked": false,
+        "bodyTamperBlocked": false,
+        "interceptHold8sBlocked": false,
+        "proxyStrippedBlocked": true,
+        "burstReplayFloodBlocked": false
+      },
+      "attacksBlocked": "2/6",
+      "statuses": {
+        "click1": 200,
+        "click2": 200,
+        "crossOriginCsrf": 403,
+        "exactReplay": 200,
+        "bodyTamper": 200,
+        "interceptHold8s": 200,
+        "proxyStripped": 403,
+        "burstFloodBlocked": false
+      },
+      "perf": {
+        "requests": 300,
+        "medianMs": 0.141,
+        "p95Ms": 0.236,
+        "reqPerSec": 6673
+      }
+    },
+    {
+      "id": "stateless_hmac",
+      "name": "Stateless HMAC Signing (30s TTL)",
+      "clientJsRequired": true,
+      "worksForNonBrowserApis": true,
+      "genuineClick1Ok": true,
+      "genuineClick2Ok": true,
+      "falsePositives": 0,
+      "attacks": {
+        "crossOriginCsrfBlocked": true,
+        "exactReplayBlocked": false,
+        "bodyTamperBlocked": true,
+        "interceptHold8sBlocked": false,
+        "proxyStrippedBlocked": true,
+        "burstReplayFloodBlocked": false
+      },
+      "attacksBlocked": "3/6",
+      "statuses": {
+        "click1": 200,
+        "click2": 200,
+        "crossOriginCsrf": 403,
+        "exactReplay": 200,
+        "bodyTamper": 403,
+        "interceptHold8s": 200,
+        "proxyStripped": 403,
+        "burstFloodBlocked": false
+      },
+      "perf": {
+        "requests": 300,
+        "medianMs": 0.123,
+        "p95Ms": 0.212,
+        "reqPerSec": 7515
+      }
+    },
+    {
+      "id": "proxysnare_balanced",
+      "name": "ProxySnare (balanced)",
+      "clientJsRequired": true,
+      "worksForNonBrowserApis": false,
+      "genuineClick1Ok": true,
+      "genuineClick2Ok": true,
+      "falsePositives": 0,
+      "attacks": {
+        "crossOriginCsrfBlocked": false,
+        "exactReplayBlocked": true,
+        "bodyTamperBlocked": true,
+        "interceptHold8sBlocked": false,
+        "proxyStrippedBlocked": true,
+        "burstReplayFloodBlocked": true
+      },
+      "attacksBlocked": "4/6",
+      "statuses": {
+        "click1": 200,
+        "click2": 200,
+        "crossOriginCsrf": 200,
+        "exactReplay": 403,
+        "bodyTamper": 403,
+        "interceptHold8s": 200,
+        "proxyStripped": 403,
+        "burstFloodBlocked": true
+      },
+      "perf": {
+        "requests": 300,
+        "medianMs": 0.234,
+        "p95Ms": 0.332,
+        "reqPerSec": 3998
+      }
+    },
+    {
+      "id": "proxysnare_strict",
+      "name": "ProxySnare (strict)",
+      "clientJsRequired": true,
+      "worksForNonBrowserApis": false,
+      "genuineClick1Ok": true,
+      "genuineClick2Ok": true,
+      "falsePositives": 0,
+      "attacks": {
+        "crossOriginCsrfBlocked": true,
+        "exactReplayBlocked": true,
+        "bodyTamperBlocked": true,
+        "interceptHold8sBlocked": true,
+        "proxyStrippedBlocked": true,
+        "burstReplayFloodBlocked": true
+      },
+      "attacksBlocked": "6/6",
+      "statuses": {
+        "click1": 200,
+        "click2": 200,
+        "crossOriginCsrf": 403,
+        "exactReplay": 403,
+        "bodyTamper": 403,
+        "interceptHold8s": 403,
+        "proxyStripped": 403,
+        "burstFloodBlocked": true
+      },
+      "perf": {
+        "requests": 300,
+        "medianMs": 0.214,
+        "p95Ms": 0.315,
+        "reqPerSec": 4422
+      }
+    }
+  ]
+}

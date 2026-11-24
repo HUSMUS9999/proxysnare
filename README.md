@@ -106,7 +106,23 @@ if verdict.blocked:
 
 ---
 
-## Live Verification: Caido Repeater `0.59.1` vs. Chrome `158`
+## Unbiased Benchmark vs. Standard HTTP Defenses
+
+Measured live over real local TCP/HTTP sockets (`node benchmarks/run_unbiased_benchmark.js`, raw data in [`benchmarks/results.json`](benchmarks/results.json)) comparing **ProxySnare** head-to-head against widely deployed HTTP defenses on **2 genuine browser requests** (false-positive check), **6 live attack scenarios**, and **300 sequential POSTs** (latency & throughput):
+
+| Defense | False Positives | Cross-Origin CSRF | Exact Replay | Body Tamper | 8.3s Intercept Hold | Proxy / Stripped | Burst Flood | Median / p95 Latency | Throughput | Honest Trade-Off |
+| :--- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :--- |
+| **Unprotected Node.js HTTP API** | `0/2` | `200` | `200` | `200` | `200` | `200` | `200` | `0.187 / 0.290 ms` | `5,016 req/s` | Baseline control; zero protection |
+| **Double-Submit CSRF Guard** | `0/2` | **403** | `200` | `200` | `200` | `200` | `200` | `0.153 / 0.239 ms` | `6,218 req/s` | Zero client JS; stops CSRF only (Repeater carries same cookie+header) |
+| **Rate Limiter (`60 req/min/IP`)** | `0/2` | `200` | `200` | `200` | `200` | `200` | **429** | `0.163 / 0.251 ms` | `5,771 req/s` | Works for non-browser M2M APIs; throttles floods, misses slow manual Repeater edits |
+| **Fetch Metadata + Origin Guard** | `0/2` | **403** | `200` | `200` | `200` | **403** | `200` | `0.141 / 0.236 ms` | `6,673 req/s` | Zero client JS; blocks bare `curl`/cross-site, misses captured Repeater headers |
+| **Stateless HMAC (`30s` TTL)** | `0/2` | **403** | `200` | **403** | `200` | **403** | `200` | **`0.123 / 0.212 ms`** | **`7,515 req/s`** | Fastest crypto check & M2M-compatible; allows exact replay & 8s hold within TTL |
+| **ProxySnare (`balanced`, `15s`)** | `0/2` | `200`* | **403** | **403** | `200`* | **403** | **403** | `0.234 / 0.332 ms` | `3,998 req/s` | Tolerates slow mobile networks (`15s` window); pair with Origin/CSRF checks |
+| **ProxySnare (`strict`, `8s`)** | **`0/2`** | **403** | **403** | **403** | **403** | **403** | **403** | `0.214 / 0.315 ms` | `4,422 req/s` | **`6/6` blocked, `0/2` FP**; requires `/__proxysnare/guard.js` (browser traffic) and adds ~`0.05–0.09 ms` |
+
+*\*In `balanced` mode, an 8.3s hold stays inside the 15s mobile tolerance window, and a missing proof alone scores `5 < 6` unless paired with proxy/wire anomalies. Where you need non-browser M2M REST APIs or zero client JS, use Stateless HMAC + Rate Limiting + Fetch Metadata; where you need live browser Repeater/Intercept defense, use `ProxySnare (strict)`.*
+
+### Live Verification: Caido Repeater `0.59.1` vs. Chrome `158`
 
 Empirically measured against the live ProxySnare strict demo server (`node bin/proxysnare.js demo --mode strict`):
 
@@ -148,10 +164,14 @@ sequenceDiagram
 
 ---
 
-## Testing
+## Testing & Reproducing Benchmarks
 
 ```bash
+# Run zero-dependency Node.js + Python parity tests
 npm test
+
+# Reproduce the unbiased 7-defense live HTTP benchmark (writes benchmarks/results.json)
+node benchmarks/run_unbiased_benchmark.js
 ```
 
 ## Documentation & Ecosystem
