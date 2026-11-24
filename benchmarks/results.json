@@ -1,8 +1,8 @@
 {
   "version": "1.0.0",
-  "timestamp": "2026-11-24T12:04:26.893Z",
-  "nodeVersion": "v22.23.2",
-  "methodology": "Real local TCP/HTTP sockets; 2 genuine browser requests + 5 live attack scenarios + 300 sequential POST latency benchmark per defense.",
+  "timestamp": "2026-11-24T21:15:34.723Z",
+  "nodeVersion": "v24.22.3",
+  "methodology": "Real local TCP/HTTP keep-alive sockets; 100 warmup + 300 measured sequential POSTs per defense (no client HMAC billed to non-HMAC baselines); 2 genuine browser requests + 6 live attack scenarios (Burst Flood uses 75 unique fresh requests, not nonce replays).",
   "results": [
     {
       "id": "baseline",
@@ -18,7 +18,7 @@
         "bodyTamperBlocked": false,
         "interceptHold8sBlocked": false,
         "proxyStrippedBlocked": false,
-        "burstReplayFloodBlocked": false
+        "uniqueBurstFloodBlocked": false
       },
       "attacksBlocked": "0/6",
       "statuses": {
@@ -29,13 +29,14 @@
         "bodyTamper": 200,
         "interceptHold8s": 200,
         "proxyStripped": 200,
-        "burstFloodBlocked": false
+        "uniqueBurstFloodBlocked": false
       },
       "perf": {
         "requests": 300,
-        "medianMs": 0.187,
-        "p95Ms": 0.29,
-        "reqPerSec": 5016
+        "warmupRequests": 100,
+        "medianMs": 0.197,
+        "p95Ms": 0.317,
+        "reqPerSec": 4639
       }
     },
     {
@@ -52,7 +53,7 @@
         "bodyTamperBlocked": false,
         "interceptHold8sBlocked": false,
         "proxyStrippedBlocked": false,
-        "burstReplayFloodBlocked": false
+        "uniqueBurstFloodBlocked": false
       },
       "attacksBlocked": "1/6",
       "statuses": {
@@ -63,13 +64,14 @@
         "bodyTamper": 200,
         "interceptHold8s": 200,
         "proxyStripped": 200,
-        "burstFloodBlocked": false
+        "uniqueBurstFloodBlocked": false
       },
       "perf": {
         "requests": 300,
-        "medianMs": 0.153,
-        "p95Ms": 0.239,
-        "reqPerSec": 6218
+        "warmupRequests": 100,
+        "medianMs": 0.136,
+        "p95Ms": 0.261,
+        "reqPerSec": 6124
       }
     },
     {
@@ -86,7 +88,7 @@
         "bodyTamperBlocked": false,
         "interceptHold8sBlocked": false,
         "proxyStrippedBlocked": false,
-        "burstReplayFloodBlocked": true
+        "uniqueBurstFloodBlocked": true
       },
       "attacksBlocked": "1/6",
       "statuses": {
@@ -97,13 +99,14 @@
         "bodyTamper": 200,
         "interceptHold8s": 200,
         "proxyStripped": 200,
-        "burstFloodBlocked": true
+        "uniqueBurstFloodBlocked": true
       },
       "perf": {
         "requests": 300,
-        "medianMs": 0.163,
-        "p95Ms": 0.251,
-        "reqPerSec": 5771
+        "warmupRequests": 100,
+        "medianMs": 0.196,
+        "p95Ms": 0.252,
+        "reqPerSec": 4824
       }
     },
     {
@@ -120,7 +123,7 @@
         "bodyTamperBlocked": false,
         "interceptHold8sBlocked": false,
         "proxyStrippedBlocked": true,
-        "burstReplayFloodBlocked": false
+        "uniqueBurstFloodBlocked": false
       },
       "attacksBlocked": "2/6",
       "statuses": {
@@ -131,18 +134,19 @@
         "bodyTamper": 200,
         "interceptHold8s": 200,
         "proxyStripped": 403,
-        "burstFloodBlocked": false
+        "uniqueBurstFloodBlocked": false
       },
       "perf": {
         "requests": 300,
-        "medianMs": 0.141,
-        "p95Ms": 0.236,
-        "reqPerSec": 6673
+        "warmupRequests": 100,
+        "medianMs": 0.089,
+        "p95Ms": 0.153,
+        "reqPerSec": 10366
       }
     },
     {
       "id": "stateless_hmac",
-      "name": "Stateless HMAC Signing (30s TTL)",
+      "name": "Stateless HMAC (30s TTL)",
       "clientJsRequired": true,
       "worksForNonBrowserApis": true,
       "genuineClick1Ok": true,
@@ -154,7 +158,7 @@
         "bodyTamperBlocked": true,
         "interceptHold8sBlocked": false,
         "proxyStrippedBlocked": true,
-        "burstReplayFloodBlocked": false
+        "uniqueBurstFloodBlocked": false
       },
       "attacksBlocked": "3/6",
       "statuses": {
@@ -165,13 +169,49 @@
         "bodyTamper": 403,
         "interceptHold8s": 200,
         "proxyStripped": 403,
-        "burstFloodBlocked": false
+        "uniqueBurstFloodBlocked": false
       },
       "perf": {
         "requests": 300,
-        "medianMs": 0.123,
-        "p95Ms": 0.212,
-        "reqPerSec": 7515
+        "warmupRequests": 100,
+        "medianMs": 0.121,
+        "p95Ms": 0.219,
+        "reqPerSec": 7463
+      }
+    },
+    {
+      "id": "hmac_8s_nonce",
+      "name": "HMAC (8s TTL) + Nonce Cache",
+      "clientJsRequired": true,
+      "worksForNonBrowserApis": true,
+      "genuineClick1Ok": true,
+      "genuineClick2Ok": true,
+      "falsePositives": 0,
+      "attacks": {
+        "crossOriginCsrfBlocked": true,
+        "exactReplayBlocked": true,
+        "bodyTamperBlocked": true,
+        "interceptHold8sBlocked": true,
+        "proxyStrippedBlocked": true,
+        "uniqueBurstFloodBlocked": false
+      },
+      "attacksBlocked": "5/6",
+      "statuses": {
+        "click1": 200,
+        "click2": 200,
+        "crossOriginCsrf": 403,
+        "exactReplay": 403,
+        "bodyTamper": 403,
+        "interceptHold8s": 403,
+        "proxyStripped": 403,
+        "uniqueBurstFloodBlocked": false
+      },
+      "perf": {
+        "requests": 300,
+        "warmupRequests": 100,
+        "medianMs": 0.124,
+        "p95Ms": 0.211,
+        "reqPerSec": 7439
       }
     },
     {
@@ -183,29 +223,30 @@
       "genuineClick2Ok": true,
       "falsePositives": 0,
       "attacks": {
-        "crossOriginCsrfBlocked": false,
+        "crossOriginCsrfBlocked": true,
         "exactReplayBlocked": true,
         "bodyTamperBlocked": true,
         "interceptHold8sBlocked": false,
         "proxyStrippedBlocked": true,
-        "burstReplayFloodBlocked": true
+        "uniqueBurstFloodBlocked": false
       },
       "attacksBlocked": "4/6",
       "statuses": {
         "click1": 200,
         "click2": 200,
-        "crossOriginCsrf": 200,
+        "crossOriginCsrf": 403,
         "exactReplay": 403,
         "bodyTamper": 403,
         "interceptHold8s": 200,
         "proxyStripped": 403,
-        "burstFloodBlocked": true
+        "uniqueBurstFloodBlocked": false
       },
       "perf": {
         "requests": 300,
-        "medianMs": 0.234,
-        "p95Ms": 0.332,
-        "reqPerSec": 3998
+        "warmupRequests": 100,
+        "medianMs": 0.206,
+        "p95Ms": 0.315,
+        "reqPerSec": 4449
       }
     },
     {
@@ -222,9 +263,9 @@
         "bodyTamperBlocked": true,
         "interceptHold8sBlocked": true,
         "proxyStrippedBlocked": true,
-        "burstReplayFloodBlocked": true
+        "uniqueBurstFloodBlocked": false
       },
-      "attacksBlocked": "6/6",
+      "attacksBlocked": "5/6",
       "statuses": {
         "click1": 200,
         "click2": 200,
@@ -233,13 +274,14 @@
         "bodyTamper": 403,
         "interceptHold8s": 403,
         "proxyStripped": 403,
-        "burstFloodBlocked": true
+        "uniqueBurstFloodBlocked": false
       },
       "perf": {
         "requests": 300,
-        "medianMs": 0.214,
-        "p95Ms": 0.315,
-        "reqPerSec": 4422
+        "warmupRequests": 100,
+        "medianMs": 0.193,
+        "p95Ms": 0.297,
+        "reqPerSec": 4841
       }
     }
   ]

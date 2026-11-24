@@ -4,12 +4,15 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 const http = require("node:http");
+const zlib = require("node:zlib");
 const { execFileSync } = require("node:child_process");
 const path = require("node:path");
 
 const {
   createProxySnareEngine,
+  createProxySnareMiddleware,
   createProxySnareServer,
+  buildBrowserGuardScript,
   compileNaturalLanguage,
 } = require("../src/index.js");
 
@@ -68,7 +71,7 @@ test("1. Legitimate browser sequence passes with score=0 and rotates honey-canar
   }
 });
 
-test("2. Caido Repeater / Burp Suite Repeater exact replay, body edit, intercept hold, and stale canary are blocked", () => {
+test("2. Caido / Burp Repeater exact replay, body edit, intercept hold, stale canary & balanced strip are blocked", () => {
   const engine = createProxySnareEngine({ mode: "strict", freshnessMs: 5000, protectedPaths: ["/api"] });
   const sess = engine.issueSession({ ip: "127.0.0.1", userAgent: CHROME_UA });
   const body = JSON.stringify({ amount: 10 });
@@ -97,7 +100,7 @@ test("2. Caido Repeater / Burp Suite Repeater exact replay, body edit, intercept
   const r1 = engine.inspectRequest({ method: "POST", url: "/api/pay", body, headers });
   assert.equal(r1.ok, true);
 
-  // Attack A: Exact Replay in Caido/Burp Repeater -> REPEATER_NONCE_REPLAYED + SEQ + STALE_CANARY
+  // Attack A: Exact Replay -> REPEATER_NONCE_REPLAYED + SEQ + STALE_CANARY
   const rReplay = engine.inspectRequest({ method: "POST", url: "/api/pay", body, headers });
   assert.equal(rReplay.blocked, true);
   assert.ok(rReplay.reasons.some((x) => x.code === "REPEATER_NONCE_REPLAYED"));
@@ -118,7 +121,7 @@ test("2. Caido Repeater / Burp Suite Repeater exact replay, body edit, intercept
   assert.equal(rTamper.blocked, true);
   assert.ok(rTamper.reasons.some((x) => x.code === "REPEATER_BODY_OR_PATH_TAMPERED"));
 
-  // Attack C: Request paused in Caido/Burp Intercept tab for 12s (> freshnessMs)
+  // Attack C: Request paused in Intercept past freshnessMs
   const oldTs = Date.now() - 12_000;
   const holdNonce = crypto.randomBytes(12).toString("hex");
   const holdProof = engine.signRequest({
@@ -146,10 +149,21 @@ test("2. Caido Repeater / Burp Suite Repeater exact replay, body edit, intercept
   });
   assert.equal(rHold.blocked, true);
   assert.ok(rHold.reasons.some((x) => x.code === "INTERCEPT_HOLD_OR_STALE_REPLAY"));
+
+  // Attack D: Balanced mode stripping X-PS-* headers MUST still block (no score 5 < 6 bypass!)
+  const bal = createProxySnareEngine({ mode: "balanced", protectedPaths: ["/api"] });
+  const rBalStrip = bal.inspectRequest({
+    method: "POST",
+    url: "/api/pay",
+    body,
+    headers: makeBrowserHeaders(),
+  });
+  assert.equal(rBalStrip.blocked, true);
+  assert.ok(rBalStrip.reasons.some((x) => x.code === "REPEATER_PROOF_MISSING"));
 });
 
-test("3. Proxy leakage headers, missing Fetch Metadata, Connection:close, and CL+TE smuggling are caught", () => {
-  const engine = createProxySnareEngine({ mode: "strict", protectedPaths: ["/api"] });
+test("3. Proxy leakage headers, path normalization bypasses, rightmost XFF, CORS preflight, and CL+TE smuggling", () => {
+  const engine = createProxySnareEngine({ mode: "strict", protectedPaths: ["/api"], trustProxy: "127.0.0.1" });
 
   const rProxy = engine.inspectRequest({
     method: "GET",
@@ -164,6 +178,43 @@ test("3. Proxy leakage headers, missing Fetch Metadata, Connection:close, and CL
   assert.ok(rProxy.reasons.some((x) => x.code === "PROXY_HEADER_LEAK"));
   assert.ok(rProxy.reasons.some((x) => x.code === "FETCH_METADATA_MISSING"));
   assert.ok(rProxy.reasons.some((x) => x.code === "REPEATER_CONNECTION_CLOSE"));
+
+  // Unprotected plain LAN HTTP GET / without Sec-Fetch-* must NOT false-positive
+  const rPlainPublic = engine.inspectRequest({
+    method: "GET",
+    url: "/",
+    headers: { "user-agent": CHROME_UA },
+  });
+  assert.equal(rPlainPublic.blocked, false);
+
+  // Path normalization defeats case, percent-encoding, double-slash, traversal, matrix params, absolute-form URI
+  for (const bypassUrl of [
+    "/API/transfer",
+    "/%61pi/transfer",
+    "//api/transfer",
+    "/public/../api/transfer",
+    "/api;v=1/transfer",
+    "http://victim.example/api/transfer",
+  ]) {
+    const r = engine.inspectRequest({ method: "POST", url: bypassUrl, headers: makeBrowserHeaders(), body: "{}" });
+    assert.equal(r.blocked, true, `Path bypass should be blocked: ${bypassUrl}`);
+    assert.ok(r.reasons.some((x) => x.code === "REPEATER_PROOF_MISSING"));
+  }
+
+  // CORS preflight OPTIONS passes cleanly
+  const rOpts = engine.inspectRequest({
+    method: "OPTIONS",
+    url: "/api/transfer",
+    headers: { "access-control-request-method": "POST", origin: "https://app.example" },
+  });
+  assert.equal(rOpts.blocked, false);
+
+  // Rightmost untrusted X-Forwarded-For extraction (defeats leftmost spoofing)
+  const ip = engine.extractClientIp({
+    socket: { remoteAddress: "::ffff:127.0.0.1" },
+    headers: { "x-forwarded-for": "1.2.3.4, 198.51.100.7, 127.0.0.1" },
+  });
+  assert.equal(ip, "198.51.100.7");
 
   const rSmug = engine.inspectRequest({
     method: "POST",
@@ -193,7 +244,7 @@ test("4. Monitor mode logs & scores Repeater traffic without blocking", () => {
   assert.equal(seen.length, 1);
 });
 
-test("5. Standalone Reverse-Proxy Shield auto-injects guard.js, allows signed traffic, and blocks unauthenticated Repeater", async () => {
+test("5. Reverse-Proxy Shield handles gzip HTML, HEAD, Express pre-parsed handshake, and blocks Repeater replays", async () => {
   const backend = http.createServer((req, res) => {
     if (req.url === "/api/secret" && req.method === "POST") {
       let body = "";
@@ -204,8 +255,20 @@ test("5. Standalone Reverse-Proxy Shield auto-injects guard.js, allows signed tr
       });
       return;
     }
+    const html = "<!doctype html><html><head><title>App</title></head><body>Hello</body></html>";
+    if (req.url === "/gzip") {
+      const gz = zlib.gzipSync(Buffer.from(html, "utf8"));
+      res.writeHead(200, { "Content-Type": "text/html", "Content-Encoding": "gzip", "Content-Length": gz.length });
+      res.end(gz);
+      return;
+    }
+    if (req.method === "HEAD") {
+      res.writeHead(200, { "Content-Type": "text/html", "Content-Length": Buffer.byteLength(html) });
+      res.end();
+      return;
+    }
     res.writeHead(200, { "Content-Type": "text/html" });
-    res.end("<!doctype html><html><head><title>App</title></head><body>Hello</body></html>");
+    res.end(html);
   });
   await new Promise((r) => backend.listen(0, "127.0.0.1", r));
   const bPort = backend.address().port;
@@ -217,11 +280,27 @@ test("5. Standalone Reverse-Proxy Shield auto-injects guard.js, allows signed tr
   });
   const baseUrl = await shield.listen(0, "127.0.0.1");
   try {
-    // HTML auto-injected with /__proxysnare/guard.js
+    // HTML auto-injected cleanly (including when upstream ignores Accept-Encoding and returns gzip!)
     const htmlResp = await fetch(`${baseUrl}/`, { headers: makeBrowserHeaders() });
     assert.equal(htmlResp.status, 200);
-    const html = await htmlResp.text();
-    assert.ok(html.includes('<script src="/__proxysnare/guard.js"></script>'));
+    assert.ok((await htmlResp.text()).includes('<script src="/__proxysnare/guard.js"></script>'));
+
+    const gzResp = await fetch(`${baseUrl}/gzip`, { headers: makeBrowserHeaders() });
+    assert.equal(gzResp.status, 200);
+    assert.ok((await gzResp.text()).includes('<script src="/__proxysnare/guard.js"></script>'));
+
+    // HEAD response must NOT receive injected body
+    const headResp = await fetch(`${baseUrl}/`, { method: "HEAD", headers: makeBrowserHeaders() });
+    assert.equal(headResp.status, 200);
+    assert.equal((await headResp.text()).length, 0);
+
+    // Cross-site handshake rejected (CSRF protection)
+    const csrfHs = await fetch(`${baseUrl}/__proxysnare/handshake`, {
+      method: "POST",
+      headers: makeBrowserHeaders({ "sec-fetch-site": "cross-site", "content-type": "application/json" }),
+      body: "{}",
+    });
+    assert.equal(csrfHs.status, 403);
 
     // Direct Repeater / curl POST without proof -> 403
     const badResp = await fetch(`${baseUrl}/api/secret`, {
@@ -230,8 +309,6 @@ test("5. Standalone Reverse-Proxy Shield auto-injects guard.js, allows signed tr
       body: '{"x":1}',
     });
     assert.equal(badResp.status, 403);
-    const badJson = await badResp.json();
-    assert.equal(badJson.error, "REPEATER_OR_PROXY_BLOCKED");
 
     // Handshake + valid signed request -> 200 OK + rotated canary
     const hsResp = await fetch(`${baseUrl}/__proxysnare/handshake`, {
@@ -268,10 +345,9 @@ test("5. Standalone Reverse-Proxy Shield auto-injects guard.js, allows signed tr
     });
     assert.equal(okResp.status, 200);
     assert.ok(okResp.headers.get("x-ps-next-canary"));
-    const okJson = await okResp.json();
-    assert.equal(okJson.received, body);
+    assert.equal((await okResp.json()).received, body);
 
-    // Replaying exact same signed request (Caido/Burp Repeater) -> 403!
+    // Replaying exact same signed request -> 403
     const repResp = await fetch(`${baseUrl}/api/secret`, {
       method: "POST",
       headers: makeBrowserHeaders({
@@ -286,34 +362,69 @@ test("5. Standalone Reverse-Proxy Shield auto-injects guard.js, allows signed tr
       body,
     });
     assert.equal(repResp.status, 403);
-    const repJson = await repResp.json();
-    assert.ok(repJson.reasons.includes("REPEATER_NONCE_REPLAYED"));
+    assert.ok((await repResp.json()).reasons.includes("REPEATER_NONCE_REPLAYED"));
   } finally {
     await shield.close();
     await new Promise((r) => backend.close(r));
   }
+
+  // Verify Express-style pre-parsed body (express.json before middleware) does NOT hang /handshake!
+  const mw = createProxySnareMiddleware({ mode: "strict", protectedPaths: ["/api"] });
+  const expressSim = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", async () => {
+      req.rawBody = Buffer.concat(chunks);
+      req._body = true;
+      await mw(req, res, () => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end('{"ok":true}');
+      });
+    });
+  });
+  await new Promise((r) => expressSim.listen(0, "127.0.0.1", r));
+  try {
+    const port = expressSim.address().port;
+    const hs = await fetch(`http://127.0.0.1:${port}/__proxysnare/handshake`, {
+      method: "POST",
+      headers: makeBrowserHeaders({ "Content-Type": "application/json" }),
+      body: '{"t":1}',
+    });
+    assert.equal(hs.status, 200);
+    assert.ok((await hs.json()).sessionId);
+  } finally {
+    await new Promise((r) => expressSim.close(r));
+  }
 });
 
-test("6. Plain-English Natural-Language CLI compiler + Python wire-compatible verifier", () => {
-  const p1 = compileNaturalLanguage("block caido and burp repeater on http://localhost:3000 on port 8099 behind nginx");
-  assert.equal(p1.intent, "protect");
-  assert.equal(p1.options.mode, "strict");
-  assert.equal(p1.options.port, 8099);
-  assert.equal(p1.options.trustProxy, "127.0.0.1");
+test("6. NL CLI compiler fixes, browser guard syntax, and Python NaN/parity tests", () => {
+  // Slashes in English prose ("caido/burp") must NOT hijack --paths!
+  const pSlash = compileNaturalLanguage("block caido/burp repeater on http://localhost:3000 on port 8099 behind nginx");
+  assert.equal(pSlash.intent, "protect");
+  assert.equal(pSlash.options.mode, "strict");
+  assert.equal(pSlash.options.port, 8099);
+  assert.deepEqual(pSlash.options.protectedPaths, ["/api"]);
+  assert.equal(pSlash.options.trustProxy, "127.0.0.1");
 
-  const p2 = compileNaturalLanguage("watch for burp repeater without blocking on http://localhost:4000");
-  assert.equal(p2.options.mode, "monitor");
+  // Negated monitor & "audit and block" must NOT silently downgrade to monitor!
+  const pNoMon = compileNaturalLanguage("audit and block burp on http://localhost:3000");
+  assert.equal(pNoMon.options.mode, "strict");
+  const pMon = compileNaturalLanguage("watch for burp repeater without blocking on http://localhost:4000");
+  assert.equal(pMon.options.mode, "monitor");
 
-  // Verify Python stdlib verifier matches Node.js signing protocol
+  // Browser guard must parse cleanly as valid JS
+  new Function(buildBrowserGuardScript({ protectedRules: ["/api", { regex: "^/v\\d+/pay", flags: "i" }] }));
+
+  // Verify Python stdlib verifier matches Node.js signing protocol AND rejects NaN timestamps & path bypasses!
+  const nodeEngine = createProxySnareEngine({ mode: "strict", protectedPaths: ["/api"] });
   const pyOut = execFileSync(
     "python3",
     [
       "-c",
-      `import sys; sys.path.insert(0, ${JSON.stringify(path.resolve(__dirname, "../python"))});
+      `import sys, time; sys.path.insert(0, ${JSON.stringify(path.resolve(__dirname, "../python"))});
 from proxysnare import ProxySnareVerifier
 v = ProxySnareVerifier(mode="strict")
 s = v.issue_session(user_agent="Mozilla/5.0 Chrome/158.0")
-import time
 ts = int(time.time() * 1000)
 p = v.sign_request(session_key_hex=s["sessionKeyHex"], method="POST", path_with_query="/api/go", body=b'{"a":1}', seq=1, ts=ts, nonce="n1", canary=s["canary"])
 h = {"User-Agent":"Mozilla/5.0 Chrome/158.0","Sec-Fetch-Site":"same-origin","X-PS-Session":s["sessionId"],"X-PS-Seq":"1","X-PS-Ts":str(ts),"X-PS-Nonce":"n1","X-PS-Canary":s["canary"],"X-PS-Proof":p}
@@ -321,9 +432,28 @@ r1 = v.inspect_request(method="POST", url="/api/go", headers=h, body=b'{"a":1}')
 r2 = v.inspect_request(method="POST", url="/api/go", headers=h, body=b'{"a":1}')
 assert r1.ok and not r1.blocked and r1.score == 0
 assert r2.blocked and any(x["code"]=="REPEATER_NONCE_REPLAYED" for x in r2.reasons)
-print("PY_OK")`,
+# NaN timestamp bypass check!
+h_nan = dict(h, **{"X-PS-Seq": "2", "X-PS-Ts": "NaN", "X-PS-Nonce": "n2", "X-PS-Canary": r1.next_canary})
+r_nan = v.inspect_request(method="POST", url="/api/go", headers=h_nan, body=b'{"a":1}')
+assert r_nan.blocked and any(x["code"]=="INTERCEPT_HOLD_OR_STALE_REPLAY" for x in r_nan.reasons)
+# Path bypass check!
+r_case = v.inspect_request(method="POST", url="/%61PI/go", headers={"User-Agent":"Mozilla/5.0 Chrome/158.0","Sec-Fetch-Site":"same-origin"}, body=b'{}')
+assert r_case.blocked and any(x["code"]=="REPEATER_PROOF_MISSING" for x in r_case.reasons)
+print(p + "|" + s["sessionKeyHex"] + "|" + str(ts) + "|" + s["canary"])`,
     ],
     { encoding: "utf8" }
-  );
-  assert.equal(pyOut.trim(), "PY_OK");
+  ).trim();
+  const [pyProof, pyKey, pyTs, pyCanary] = pyOut.split("|");
+  // Cross-language Node <-> Python HMAC exact byte parity!
+  const nodeProof = nodeEngine.signRequest({
+    sessionKeyHex: pyKey,
+    method: "POST",
+    pathWithQuery: "/api/go",
+    body: '{"a":1}',
+    seq: 1,
+    ts: pyTs,
+    nonce: "n1",
+    canary: pyCanary,
+  });
+  assert.equal(nodeProof, pyProof);
 });

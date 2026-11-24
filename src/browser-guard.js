@@ -2,11 +2,18 @@
 
 /**
  * Generates the zero-dependency 1-line browser drop-in guard served at `/__proxysnare/guard.js`.
- * Transparently wraps `window.fetch` and `XMLHttpRequest` to attach non-extractable WebCrypto
- * HMAC-SHA256 Proof-of-Freshness + rotating honey-canary headers on protected routes.
+ * Transparently wraps `window.fetch` and `XMLHttpRequest` to attach HMAC-SHA256
+ * Proof-of-Freshness + rotating honey-canary headers on protected routes.
+ *
+ * Concurrency & compatibility guarantees:
+ *   - Serializes protected requests per session so `Promise.all([fetch(...), fetch(...)])`
+ *     advances the single-step rotating canary without self-blocking.
+ *   - Handles `FormData`, `Blob`, `URLSearchParams`, `URL`, and `Request` objects cleanly.
+ *   - Auto-rehandshakes once on session expiration (`REPEATER_UNKNOWN_OR_EXPIRED_SESSION`).
  */
-function buildBrowserGuardScript({ basePath = "/__proxysnare", protectedPaths = ["/api"] } = {}) {
-  const pathsJson = JSON.stringify(protectedPaths);
+function buildBrowserGuardScript({ basePath = "/__proxysnare", protectedPaths = ["/api"], protectedRules = null } = {}) {
+  const rules = Array.isArray(protectedRules) && protectedRules.length > 0 ? protectedRules : protectedPaths;
+  const rulesJson = JSON.stringify(rules);
   const bpJson = JSON.stringify(basePath);
   return `(() => {
   "use strict";
@@ -14,7 +21,14 @@ function buildBrowserGuardScript({ basePath = "/__proxysnare", protectedPaths = 
   window.__PROXYSNARE_GUARD_LOADED__ = true;
 
   const BASE = ${bpJson};
-  const PROTECTED = ${pathsJson};
+  const RAW_RULES = ${rulesJson};
+  const RULES = RAW_RULES.map((r) => {
+    if (r && typeof r === "object" && typeof r.regex === "string") {
+      try { return new RegExp(r.regex, r.flags || ""); } catch { return null; }
+    }
+    return typeof r === "string" ? r.toLowerCase() : null;
+  }).filter(Boolean);
+
   const origFetch = window.fetch.bind(window);
   const encoder = new TextEncoder();
 
@@ -22,6 +36,14 @@ function buildBrowserGuardScript({ basePath = "/__proxysnare", protectedPaths = 
   let initPromise = null;
   let seq = 0;
   let clockOffsetMs = 0;
+  // Serializes protected requests so concurrent Promise.all calls advance the rotating canary cleanly
+  let reqChain = Promise.resolve();
+
+  function enqueueProtected(fn) {
+    const run = reqChain.then(fn, fn);
+    reqChain = run.then(() => {}, () => {});
+    return run;
+  }
 
   function toHex(buf) {
     const u = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
@@ -37,17 +59,32 @@ function buildBrowserGuardScript({ basePath = "/__proxysnare", protectedPaths = 
   }
 
   function isProtectedPath(pathname) {
-    for (let i = 0; i < PROTECTED.length; i++) {
-      const p = PROTECTED[i];
-      if (p === "*" || p === "/" || pathname === p || pathname.startsWith(p.endsWith("/") ? p : p + "/")) {
+    const lower = String(pathname || "/").toLowerCase();
+    for (let i = 0; i < RULES.length; i++) {
+      const rule = RULES[i];
+      if (rule instanceof RegExp) {
+        rule.lastIndex = 0;
+        if (rule.test(pathname)) return true;
+      } else if (rule === "*" || rule === "/" || lower === rule || lower.startsWith(rule.endsWith("/") ? rule : rule + "/")) {
         return true;
       }
     }
     return false;
   }
 
-  async function ensureSession() {
-    if (state) return state;
+  function assertSecureWebCrypto() {
+    if (typeof crypto === "undefined" || !crypto.subtle) {
+      throw new Error("PROXYSNARE_REQUIRES_SECURE_CONTEXT: WebCrypto (crypto.subtle) requires HTTPS or localhost.");
+    }
+  }
+
+  async function ensureSession(forceNew = false) {
+    assertSecureWebCrypto();
+    if (state && !forceNew) return state;
+    if (forceNew) {
+      state = null;
+      seq = 0;
+    }
     if (initPromise) return initPromise;
     initPromise = (async () => {
       const resp = await origFetch(BASE + "/handshake", {
@@ -63,7 +100,7 @@ function buildBrowserGuardScript({ basePath = "/__proxysnare", protectedPaths = 
         "raw",
         rawKey,
         { name: "HMAC", hash: "SHA-256" },
-        false, // non-extractable inside WebCrypto!
+        false,
         ["sign"]
       );
       rawKey.fill(0);
@@ -82,7 +119,7 @@ function buildBrowserGuardScript({ basePath = "/__proxysnare", protectedPaths = 
     }
   }
 
-  async function signFetchRequest(method, pathWithQuery, bodyBytes) {
+  async function signRequestFields(method, pathWithQuery, bodyBytes) {
     const st = await ensureSession();
     seq += 1;
     const mySeq = seq;
@@ -104,49 +141,128 @@ function buildBrowserGuardScript({ basePath = "/__proxysnare", protectedPaths = 
     };
   }
 
-  async function bodyToBytes(body) {
-    if (body == null) return new Uint8Array(0);
-    if (typeof body === "string") return encoder.encode(body);
-    if (body instanceof ArrayBuffer) return new Uint8Array(body);
-    if (ArrayBuffer.isView(body)) return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
-    if (body instanceof URLSearchParams) return encoder.encode(body.toString());
-    if (typeof Blob !== "undefined" && body instanceof Blob) return new Uint8Array(await body.arrayBuffer());
-    return encoder.encode(String(body));
+  async function serializeBody(body) {
+    if (body == null) return { bytes: new Uint8Array(0), contentType: null };
+    if (typeof body === "string") return { bytes: encoder.encode(body), contentType: "text/plain;charset=UTF-8" };
+    if (body instanceof ArrayBuffer) return { bytes: new Uint8Array(body), contentType: null };
+    if (ArrayBuffer.isView(body)) return { bytes: new Uint8Array(body.buffer, body.byteOffset, body.byteLength), contentType: null };
+    if (body instanceof URLSearchParams) {
+      return { bytes: encoder.encode(body.toString()), contentType: "application/x-www-form-urlencoded;charset=UTF-8" };
+    }
+    if (typeof Blob !== "undefined" && body instanceof Blob) {
+      return { bytes: new Uint8Array(await body.arrayBuffer()), contentType: body.type || null };
+    }
+    if ((typeof FormData !== "undefined" && body instanceof FormData) || (typeof ReadableStream !== "undefined" && body instanceof ReadableStream)) {
+      const tmp = new Response(body);
+      const ct = tmp.headers.get("content-type");
+      return { bytes: new Uint8Array(await tmp.arrayBuffer()), contentType: ct };
+    }
+    return { bytes: encoder.encode(String(body)), contentType: "text/plain;charset=UTF-8" };
   }
 
-  window.fetch = async function proxySnareFetch(input, init = {}) {
-    const reqUrl = new URL(typeof input === "string" ? input : input.url, window.location.href);
+  function resolveInputUrl(input) {
+    if (typeof input === "string") return new URL(input, window.location.href);
+    if (input instanceof URL) return new URL(input.href, window.location.href);
+    if (input && typeof input.url === "string") return new URL(input.url, window.location.href);
+    return new URL(String(input), window.location.href);
+  }
+
+  window.fetch = function proxySnareFetch(input, init) {
+    const safeInit = init && typeof init === "object" ? init : {};
+    let reqUrl;
+    try {
+      reqUrl = resolveInputUrl(input);
+    } catch {
+      return origFetch(input, init);
+    }
     if (reqUrl.origin !== window.location.origin || reqUrl.pathname.startsWith(BASE) || !isProtectedPath(reqUrl.pathname)) {
       return origFetch(input, init);
     }
-    const method = (init.method || (typeof input !== "string" && input.method) || "GET").toUpperCase();
-    const rawBody = init.body !== undefined ? init.body : (typeof input !== "string" && input.body ? await input.clone().arrayBuffer() : null);
-    const bodyBytes = await bodyToBytes(rawBody);
-    const pathWithQuery = reqUrl.pathname + reqUrl.search;
-    const sigHeaders = await signFetchRequest(method, pathWithQuery, bodyBytes);
 
-    const mergedHeaders = new Headers(typeof input !== "string" ? input.headers : undefined);
-    if (init.headers) {
-      new Headers(init.headers).forEach((v, k) => mergedHeaders.set(k, v));
-    }
-    for (const [k, v] of Object.entries(sigHeaders)) mergedHeaders.set(k, v);
+    const isRequestObj = typeof Request !== "undefined" && input instanceof Request;
+    const method = (safeInit.method || (isRequestObj ? input.method : "GET") || "GET").toUpperCase();
 
-    const nextInit = { ...init, method, headers: mergedHeaders };
-    if (rawBody !== null && rawBody !== undefined) nextInit.body = bodyBytes;
+    return enqueueProtected(async () => {
+      const rawBody = safeInit.body !== undefined
+        ? safeInit.body
+        : (isRequestObj && method !== "GET" && method !== "HEAD" ? await input.clone().arrayBuffer() : null);
+      const { bytes: bodyBytes, contentType: inferredCt } = await serializeBody(rawBody);
+      const pathWithQuery = reqUrl.pathname + reqUrl.search;
 
-    const resp = await origFetch(reqUrl.toString(), nextInit);
-    const rotated = resp.headers.get("X-PS-Next-Canary");
-    if (rotated && state) state.canary = rotated;
-    return resp;
+      const executeOnce = async (forceRehandshake) => {
+        if (forceRehandshake) await ensureSession(true);
+        const sigHeaders = await signRequestFields(method, pathWithQuery, bodyBytes);
+        const mergedHeaders = new Headers(isRequestObj ? input.headers : undefined);
+        if (safeInit.headers) {
+          new Headers(safeInit.headers).forEach((v, k) => mergedHeaders.set(k, v));
+        }
+        if (inferredCt && !mergedHeaders.has("content-type")) {
+          mergedHeaders.set("content-type", inferredCt);
+        }
+        for (const [k, v] of Object.entries(sigHeaders)) mergedHeaders.set(k, v);
+
+        const nextInit = {
+          ...(isRequestObj
+            ? {
+                credentials: input.credentials,
+                mode: input.mode,
+                cache: input.cache,
+                redirect: input.redirect,
+                referrer: input.referrer,
+                referrerPolicy: input.referrerPolicy,
+                integrity: input.integrity,
+                keepalive: input.keepalive,
+                signal: input.signal,
+              }
+            : {}),
+          ...safeInit,
+          method,
+          headers: mergedHeaders,
+        };
+        if (rawBody !== null && rawBody !== undefined && method !== "GET" && method !== "HEAD") {
+          nextInit.body = bodyBytes;
+        }
+        const resp = await origFetch(reqUrl.toString(), nextInit);
+        const rotated = resp.headers.get("X-PS-Next-Canary");
+        if (rotated && state) state.canary = rotated;
+        return resp;
+      };
+
+      const resp = await executeOnce(false);
+      // Auto-recover once if a long-idle tab's 30-minute session expired server-side
+      if (resp.status === 403 && !(safeInit.signal && safeInit.signal.aborted)) {
+        try {
+          const clone = await resp.clone().json();
+          if (Array.isArray(clone.reasons) && clone.reasons.includes("REPEATER_UNKNOWN_OR_EXPIRED_SESSION")) {
+            return await executeOnce(true);
+          }
+        } catch (_) {}
+      }
+      return resp;
+    });
   };
 
   // Transparently instrument async XMLHttpRequest (Axios, jQuery, legacy XHR clients)
   if (typeof XMLHttpRequest !== "undefined") {
     const origOpen = XMLHttpRequest.prototype.open;
     const origSend = XMLHttpRequest.prototype.send;
+    const origAbort = XMLHttpRequest.prototype.abort;
+    const origSetHdr = XMLHttpRequest.prototype.setRequestHeader;
+
     XMLHttpRequest.prototype.open = function proxySnareXhrOpen(method, url, asyncFlag = true, user, pass) {
+      this._psOpId = (this._psOpId || 0) + 1;
+      this._psHeaders = Object.create(null);
       this._psMeta = { method: String(method || "GET").toUpperCase(), url: String(url || ""), asyncFlag: asyncFlag !== false };
+      if (arguments.length <= 3) return origOpen.call(this, method, url, asyncFlag);
       return origOpen.call(this, method, url, asyncFlag, user, pass);
+    };
+    XMLHttpRequest.prototype.setRequestHeader = function proxySnareXhrSetHdr(name, val) {
+      if (this._psHeaders) this._psHeaders[String(name).toLowerCase()] = true;
+      return origSetHdr.call(this, name, val);
+    };
+    XMLHttpRequest.prototype.abort = function proxySnareXhrAbort() {
+      this._psOpId = (this._psOpId || 0) + 1;
+      return origAbort.call(this);
     };
     XMLHttpRequest.prototype.send = function proxySnareXhrSend(body) {
       const meta = this._psMeta;
@@ -156,21 +272,44 @@ function buildBrowserGuardScript({ basePath = "/__proxysnare", protectedPaths = 
       if (reqUrl.origin !== window.location.origin || reqUrl.pathname.startsWith(BASE) || !isProtectedPath(reqUrl.pathname)) {
         return origSend.call(this, body);
       }
-      this.addEventListener("readystatechange", () => {
-        if (this.readyState >= 2) {
-          try {
-            const rot = this.getResponseHeader("X-PS-Next-Canary");
-            if (rot && state) state.canary = rot;
-          } catch (_) {}
+      const opId = this._psOpId;
+      const self = this;
+
+      enqueueProtected(async () => {
+        if (self._psOpId !== opId || self.readyState !== 1) return;
+        const { bytes: bodyBytes, contentType: inferredCt } = await serializeBody(body);
+        if (self._psOpId !== opId || self.readyState !== 1) return;
+        const sigHeaders = await signRequestFields(meta.method, reqUrl.pathname + reqUrl.search, bodyBytes);
+        if (self._psOpId !== opId || self.readyState !== 1) return;
+
+        if (inferredCt && (!self._psHeaders || !self._psHeaders["content-type"])) {
+          origSetHdr.call(self, "Content-Type", inferredCt);
+        }
+        for (const [k, v] of Object.entries(sigHeaders)) origSetHdr.call(self, k, v);
+
+        await new Promise((done) => {
+          let rotatedCaptured = false;
+          const onState = () => {
+            if (!rotatedCaptured && self.readyState >= 2) {
+              rotatedCaptured = true;
+              try {
+                const rot = self.getResponseHeader("X-PS-Next-Canary");
+                if (rot && state) state.canary = rot;
+              } catch (_) {}
+            }
+            if (self.readyState === 4) {
+              self.removeEventListener("readystatechange", onState);
+              done();
+            }
+          };
+          self.addEventListener("readystatechange", onState);
+          origSend.call(self, body != null && meta.method !== "GET" && meta.method !== "HEAD" ? bodyBytes : body);
+        });
+      }).catch(() => {
+        if (self._psOpId === opId && self.readyState === 1) {
+          try { origSend.call(self, body); } catch (_) {}
         }
       });
-      bodyToBytes(body)
-        .then((bodyBytes) => signFetchRequest(meta.method, reqUrl.pathname + reqUrl.search, bodyBytes))
-        .then((sigHeaders) => {
-          for (const [k, v] of Object.entries(sigHeaders)) this.setRequestHeader(k, v);
-          origSend.call(this, body);
-        })
-        .catch(() => origSend.call(this, body));
     };
   }
 

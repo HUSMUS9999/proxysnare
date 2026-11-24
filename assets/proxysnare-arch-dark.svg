@@ -1,85 +1,180 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="344" viewBox="0 0 880 344" role="img" aria-label="ProxySnare Protocol-Level Anti-Repeater Sequence">
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="596" viewBox="0 0 980 596" role="img" aria-label="ProxySnare Protocol-Level Anti-Repeater Architecture">
   <defs>
-    <marker id="arr" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
-      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#8B949E"/>
+    <marker id="ps-acc-dark" viewBox="0 0 10 10" refX="7.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 1.5 2 L 7.5 5 L 1.5 8" fill="none" stroke="#38BDF8" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"/>
     </marker>
-    <marker id="arr-acc" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
-      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#38BDF8"/>
+    <marker id="ps-ok-dark" viewBox="0 0 10 10" refX="7.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 1.5 2 L 7.5 5 L 1.5 8" fill="none" stroke="#34D399" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"/>
     </marker>
-    <marker id="arr-ok" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
-      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#22C55E"/>
+    <marker id="ps-deny-dark" viewBox="0 0 10 10" refX="7.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 1.5 2 L 7.5 5 L 1.5 8" fill="none" stroke="#F87171" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"/>
     </marker>
-    <marker id="arr-deny" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
-      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#F87171"/>
-    </marker>
+    <clipPath id="ps-clip-ok-dark"><rect x="180" y="388" width="288" height="34" rx="7"/></clipPath>
+    <clipPath id="ps-clip-dn-dark"><rect x="512" y="388" width="288" height="34" rx="7"/></clipPath>
     <style>
-      .card { fill: #161B22; stroke: #30363D; stroke-width: 1.25; }
-      .sub  { fill: #0D1117; stroke: #30363D; stroke-width: 1.15; }
-      .acc  { fill: #0C2D48; stroke: #38BDF8; stroke-width: 1.35; }
-      .ok   { fill: #052E16; stroke: #22C55E; stroke-width: 1.35; }
-      .deny { fill: #2A1215; stroke: #F87171; stroke-width: 1.35; }
-      .t    { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12.5px; font-weight: 700; fill: #E6EDF3; text-anchor: middle; }
-      .tl   { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12px; font-weight: 700; fill: #E6EDF3; text-anchor: start; }
-      .b    { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 10.6px; fill: #C9D1D9; text-anchor: middle; }
-      .m    { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 10px; fill: #8B949E; text-anchor: middle; }
-      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10.2px; font-weight: 600; fill: #7DD3FC; text-anchor: middle; }
-      .ok-t { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 11.2px; font-weight: 700; fill: #86EFAC; text-anchor: middle; }
-      .dn-t { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 11.2px; font-weight: 700; fill: #FCA5A5; text-anchor: middle; }
-      .kicker { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 9.5px; font-weight: 700; letter-spacing: 0.7px; fill: #7DD3FC; text-anchor: middle; }
-      .e    { fill: none; stroke: #8B949E; stroke-width: 1.35; }
-      .ea   { fill: none; stroke: #38BDF8; stroke-width: 1.45; }
-      .eok  { fill: none; stroke: #22C55E; stroke-width: 1.45; }
-      .edn  { fill: none; stroke: #F87171; stroke-width: 1.45; }
+      .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif; }
+      .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+      .hub-title { font-size: 14.5px; font-weight: 700; fill: #F0F6FC; letter-spacing: -0.2px; }
+      .badge-txt { font-size: 9.5px; font-weight: 700; fill: #7DD3FC; letter-spacing: 0.55px; text-anchor: middle; }
+      .step-num  { font-size: 10px; font-weight: 700; fill: #7DD3FC; text-anchor: middle; }
+      .actor-hdr { font-size: 12.2px; font-weight: 700; fill: #F0F6FC; }
+      .actor-dn  { font-size: 12.2px; font-weight: 700; fill: #FECACA; }
+      .card-cmd  { font-size: 11.4px; font-weight: 700; fill: #7DD3FC; text-anchor: middle; }
+      .card-ttl  { font-size: 11.4px; font-weight: 700; fill: #F0F6FC; }
+      .body      { font-size: 10.8px; font-weight: 400; fill: #BACAE0; }
+      .muted     { font-size: 10.2px; font-weight: 400; fill: #93A8C2; }
+      .muted-c   { font-size: 10.2px; font-weight: 400; fill: #93A8C2; text-anchor: middle; }
+      .ok-t      { font-size: 10.8px; font-weight: 700; fill: #A7F3D0; text-anchor: middle; }
+      .dn-t      { font-size: 10.8px; font-weight: 700; fill: #FECACA; text-anchor: middle; }
+      .kicker    { font-size: 10.2px; font-weight: 700; fill: #D8E4F2; letter-spacing: 0.65px; }
+      .edge-acc  { fill: none; stroke: #38BDF8; stroke-width: 1.5; stroke-linecap: round; }
+      .edge-ok   { fill: none; stroke: #34D399; stroke-width: 1.5; stroke-linecap: round; }
+      .edge-deny { fill: none; stroke: #F87171; stroke-width: 1.5; stroke-linecap: round; }
     </style>
   </defs>
 
-  <!-- 3 Vertical Swimlanes -->
-  <line x1="138" y1="70" x2="138" y2="324" stroke="#21262D" stroke-width="2" stroke-dasharray="4 4"/>
-  <line x1="440" y1="70" x2="440" y2="324" stroke="#38BDF8" stroke-width="2" stroke-dasharray="4 4" opacity="0.55"/>
-  <line x1="742" y1="70" x2="742" y2="324" stroke="#F87171" stroke-width="2" stroke-dasharray="4 4" opacity="0.55"/>
+  <!-- Self-contained rounded surface canvas -->
+  <rect x="1" y="1" width="978" height="594" rx="14" fill="#0D1117" stroke="#21262D" stroke-width="1"/>
 
-  <!-- Swimlane Headers -->
-  <rect class="card" x="24" y="16" width="228" height="52" rx="8"/>
-  <text class="t" x="138" y="39">Genuine Browser</text>
-  <text class="m" x="138" y="56">+ /__proxysnare/guard.js (WebCrypto)</text>
+  <!-- TOP PROTOCOL HEADER -->
+  <g id="ps-header">
+    <rect x="22" y="20" width="936" height="56" rx="10" fill="#111824" stroke="#38BDF8" stroke-width="1.2"/>
+    <line x1="120" y1="20.6" x2="860" y2="20.6" stroke="#7DD3FC" stroke-width="1" opacity="0.4"/>
 
-  <rect class="acc" x="326" y="16" width="228" height="52" rx="8"/>
-  <text class="t" x="440" y="39">ProxySnare Shield</text>
-  <text class="m" x="440" y="56">Middleware / Reverse Proxy / Python</text>
+    <rect x="38" y="37.5" width="110" height="21" rx="5" fill="#0D2538" stroke="#25638A" stroke-width="0.9"/>
+    <text class="mono badge-txt" x="93" y="51.5">PROTOCOL FLOW</text>
 
-  <rect class="deny" x="628" y="16" width="228" height="52" rx="8"/>
-  <text class="dn-t" x="742" y="39">Intercepting Proxy / Repeater</text>
-  <text class="m" x="742" y="56">Replay · Body Edit · Intercept Hold</text>
+    <text class="sans hub-title" x="164" y="52.5">ProxySnare — Proof-of-Freshness &amp; Rotating Honey-Canary</text>
 
-  <!-- Step 1: Handshake -->
-  <rect class="sub" x="192" y="84" width="194" height="22" rx="5"/>
-  <text class="mono" x="289" y="99">POST /__proxysnare/handshake</text>
-  <circle cx="138" cy="116" r="10.5" fill="#38BDF8"/>
-  <text x="138" y="120" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#fff" text-anchor="middle">1</text>
-  <line class="ea" x1="150" y1="116" x2="426" y2="116" marker-end="url(#arr-acc)"/>
+    <rect x="748" y="37.5" width="194" height="21" rx="5" fill="#0D2538" stroke="#25638A" stroke-width="0.9"/>
+    <text class="mono badge-txt" x="845" y="51.5">HMAC-SHA256 · ZERO DEPS</text>
+  </g>
 
-  <!-- Step 2: Ephemeral Key + Canary_0 -->
-  <rect class="sub" x="166" y="132" width="246" height="22" rx="5"/>
-  <text class="m" x="289" y="147">sessionKey (extractable: false) + canary_0</text>
-  <circle cx="440" cy="164" r="10.5" fill="#38BDF8"/>
-  <text x="440" y="168" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#fff" text-anchor="middle">2</text>
-  <line class="ea" x1="428" y1="164" x2="152" y2="164" marker-end="url(#arr-acc)"/>
+  <!-- UNOBSTRUCTED VERTICAL LIFELINES -->
+  <g id="ps-lifelines">
+    <line x1="158" y1="166" x2="158" y2="426" stroke="#2A384D" stroke-width="1.5" stroke-dasharray="4 4"/>
+    <line x1="490" y1="166" x2="490" y2="444" stroke="#1F5D82" stroke-width="1.6" stroke-dasharray="4 4"/>
+    <line x1="490" y1="422" x2="490" y2="444" stroke="#38BDF8" stroke-width="1.5" marker-end="url(#ps-acc-dark)"/>
+    <line x1="822" y1="166" x2="822" y2="426" stroke="#6B2B33" stroke-width="1.5" stroke-dasharray="4 4"/>
+  </g>
 
-  <!-- Step 3: Genuine Signed Request + Canary Rotation -->
-  <rect class="sub" x="160" y="182" width="258" height="24" rx="5"/>
-  <text class="mono" x="289" y="198">POST /api/* (seq=1, nonce, canary_0, HMAC)</text>
-  <circle cx="138" cy="216" r="10.5" fill="#22C55E"/>
-  <text x="138" y="220" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#fff" text-anchor="middle">3</text>
-  <line class="eok" x1="150" y1="216" x2="426" y2="216" marker-end="url(#arr-ok)"/>
-  <rect class="ok" x="180" y="226" width="218" height="26" rx="6"/>
-  <text class="ok-t" x="289" y="243">200 OK · X-PS-Next-Canary: canary_1</text>
+  <!-- 3 ACTOR HEADERS -->
+  <g id="ps-actors">
+    <rect x="22" y="94" width="272" height="72" rx="10" fill="#101620" stroke="#233044" stroke-width="1.15"/>
+    <rect x="38" y="110" width="24" height="19" rx="5" fill="#0D2436" stroke="#1F4F73" stroke-width="0.9"/>
+    <text class="mono step-num" x="50" y="123">01</text>
+    <text class="sans actor-hdr" x="72" y="124">Genuine Browser</text>
+    <text class="mono muted" x="38" y="148">/__proxysnare/guard.js · WebCrypto</text>
 
-  <!-- Step 4: Repeater Replay / Tamper / Hold -> 403 -->
-  <rect class="sub" x="462" y="248" width="258" height="24" rx="5"/>
-  <text class="m" x="591" y="264">Replay · stale canary_0 · body edit · &gt;8s hold</text>
-  <circle cx="742" cy="282" r="10.5" fill="#F87171"/>
-  <text x="742" y="286" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#fff" text-anchor="middle">4</text>
-  <line class="edn" x1="730" y1="282" x2="454" y2="282" marker-end="url(#arr-deny)"/>
-  <rect class="deny" x="478" y="294" width="226" height="28" rx="6"/>
-  <text class="dn-t" x="591" y="312">403 REPEATER_OR_PROXY_BLOCKED</text>
+    <rect x="344" y="94" width="292" height="72" rx="10" fill="#102232" stroke="#2B77A3" stroke-width="1.25"/>
+    <rect x="360" y="110" width="24" height="19" rx="5" fill="#0D2436" stroke="#1F4F73" stroke-width="0.9"/>
+    <text class="mono step-num" x="372" y="123">02</text>
+    <text class="sans actor-hdr" x="394" y="124">ProxySnare Shield</text>
+    <text class="sans muted" x="360" y="148">Reverse Proxy · Node Middleware · Python</text>
+
+    <rect x="686" y="94" width="272" height="72" rx="10" fill="#221216" stroke="#7F2B34" stroke-width="1.15"/>
+    <rect x="702" y="110" width="24" height="19" rx="5" fill="#221216" stroke="#F87171" stroke-width="0.9"/>
+    <text class="mono" x="714" y="123" font-size="10" font-weight="700" fill="#FECACA" text-anchor="middle">03</text>
+    <text class="sans actor-dn" x="736" y="124">Repeater / MITM Proxy</text>
+    <text class="sans muted" x="702" y="148">Caido · Burp Suite · mitmproxy · curl</text>
+  </g>
+
+  <!-- STEP 1: HANDSHAKE REQUEST (Browser -> Shield) -->
+  <g id="ps-step1">
+    <rect x="180" y="184" width="288" height="36" rx="7" fill="#151D29" stroke="#2D3B50" stroke-width="1.1"/>
+    <text class="mono card-cmd" x="324" y="206">POST /__proxysnare/handshake</text>
+
+    <circle cx="158" cy="234" r="10" fill="#38BDF8"/>
+    <text class="mono" x="158" y="237.5" font-size="10" font-weight="700" fill="#0D1117" text-anchor="middle">1</text>
+    <line class="edge-acc" x1="170" y1="234" x2="480" y2="234" marker-end="url(#ps-acc-dark)"/>
+  </g>
+
+  <!-- STEP 2: EPHEMERAL KEY + CANARY_0 (Shield -> Browser) -->
+  <g id="ps-step2">
+    <rect x="180" y="252" width="288" height="44" rx="7" fill="#151D29" stroke="#2D3B50" stroke-width="1.1"/>
+    <text class="mono card-cmd" x="324" y="270">sessionId + sessionKey + canary_0</text>
+    <text class="sans muted-c" x="324" y="287">Stored in WebCrypto (extractable: false)</text>
+
+    <circle cx="490" cy="308" r="10" fill="#38BDF8"/>
+    <text class="mono" x="490" y="311.5" font-size="10" font-weight="700" fill="#0D1117" text-anchor="middle">2</text>
+    <line class="edge-acc" x1="478" y1="308" x2="168" y2="308" marker-end="url(#ps-acc-dark)"/>
+  </g>
+
+  <!-- SUBTLE CAPTURE CONTEXT CALLOUT ON RIGHT (y=198..294, cleanly between x=512..800, ZERO lifeline collision!) -->
+  <g id="ps-capture-note">
+    <rect x="512" y="198" width="288" height="94" rx="8" fill="#101620" stroke="#233044" stroke-width="1" stroke-dasharray="4 3"/>
+    <text class="sans kicker" x="656" y="220" text-anchor="middle">MITM CAPTURE SCENARIO</text>
+    <text class="sans muted-c" x="656" y="241">Proxy records a legitimate signed request</text>
+    <text class="sans muted-c" x="656" y="258">(exact Cookie, Origin, Sec-Fetch, X-PS-*),</text>
+    <text class="sans muted-c" x="656" y="275">then pauses, edits body, or replays in Repeater</text>
+  </g>
+
+  <!-- STEP 3: GENUINE SIGNED REQUEST + CANARY ROTATION (Browser -> Shield) -->
+  <g id="ps-step3">
+    <rect x="180" y="324" width="288" height="44" rx="7" fill="#151D29" stroke="#225E4C" stroke-width="1.15"/>
+    <text class="mono card-cmd" x="324" y="342">POST /api/* (Signed Proof)</text>
+    <text class="sans muted-c" x="324" y="359">seq=1 · nonce · canary_0 · HMAC(body)</text>
+
+    <circle cx="158" cy="378" r="10" fill="#34D399"/>
+    <text class="mono" x="158" y="381.5" font-size="10" font-weight="700" fill="#0D1117" text-anchor="middle">3</text>
+    <line class="edge-ok" x1="170" y1="378" x2="480" y2="378" marker-end="url(#ps-ok-dark)"/>
+
+    <rect x="180" y="388" width="288" height="34" rx="7" fill="#0E1D1B" stroke="#225E4C" stroke-width="1.15"/>
+    <g clip-path="url(#ps-clip-ok-dark)">
+      <rect x="180" y="388" width="4" height="34" fill="#34D399"/>
+    </g>
+    <text class="mono ok-t" x="326" y="409">200 OK · X-PS-Next-Canary: canary_1</text>
+  </g>
+
+  <!-- STEP 4: REPEATER REPLAY / TAMPER / INTERCEPT HOLD -> 403 BLOCKED (parallel right of Step 3!) -->
+  <g id="ps-step4">
+    <rect x="512" y="324" width="288" height="44" rx="7" fill="#151D29" stroke="#7F2B34" stroke-width="1.15"/>
+    <text class="sans" x="656" y="342" font-size="11.2" font-weight="700" fill="#FECACA" text-anchor="middle">Captured Request Replayed / Edited</text>
+    <text class="sans muted-c" x="656" y="359">Reused nonce · stale canary_0 · &gt;8s hold</text>
+
+    <circle cx="822" cy="378" r="10" fill="#F87171"/>
+    <text class="mono" x="822" y="381.5" font-size="10" font-weight="700" fill="#0D1117" text-anchor="middle">4</text>
+    <line class="edge-deny" x1="810" y1="378" x2="500" y2="378" marker-end="url(#ps-deny-dark)"/>
+
+    <rect x="512" y="388" width="288" height="34" rx="7" fill="#221216" stroke="#7F2B34" stroke-width="1.2"/>
+    <g clip-path="url(#ps-clip-dn-dark)">
+      <rect x="512" y="388" width="4" height="34" fill="#F87171"/>
+    </g>
+    <text class="mono dn-t" x="658" y="409">403 REPEATER_OR_PROXY_BLOCKED</text>
+  </g>
+
+  <!-- BOTTOM BAND: 6-LAYER SERVER VERIFICATION PIPELINE (x=22..958, y=450..574) -->
+  <g id="ps-server-checks">
+    <rect x="22" y="450" width="936" height="124" rx="10" fill="#101620" stroke="#233044" stroke-width="1.15"/>
+    <text class="sans kicker" x="38" y="472">SERVER VERIFICATION PIPELINE (STRICT &gt;= 4 · BALANCED &gt;= 6)</text>
+    <rect x="850" y="458" width="92" height="18" rx="4" fill="#0C2C42" stroke="#25709C" stroke-width="0.75"/>
+    <text class="mono" x="896" y="470" font-size="8.8" font-weight="700" fill="#7DD3FC" text-anchor="middle">6 CHECK LAYERS</text>
+    <line x1="38" y1="484" x2="942" y2="484" stroke="#1D2838" stroke-width="1"/>
+
+    <!-- Row 1 (3 equal cards: w=292, gap=14 -> x=38, 344, 650) -->
+    <rect x="38" y="494" width="292" height="30" rx="6" fill="#151D29" stroke="#2D3B50" stroke-width="1"/>
+    <text class="sans card-ttl" x="50" y="513">1-Use Nonce Cache</text>
+    <text class="sans muted" x="318" y="513" text-anchor="end">Exact replay (+10)</text>
+
+    <rect x="344" y="494" width="292" height="30" rx="6" fill="#151D29" stroke="#2D3B50" stroke-width="1"/>
+    <text class="sans card-ttl" x="356" y="513">Body + Path HMAC</text>
+    <text class="sans muted" x="624" y="513" text-anchor="end">Payload tamper (+10)</text>
+
+    <rect x="650" y="494" width="292" height="30" rx="6" fill="#151D29" stroke="#2D3B50" stroke-width="1"/>
+    <text class="sans card-ttl" x="662" y="513">Rotating Canary</text>
+    <text class="sans muted" x="930" y="513" text-anchor="end">Stale token (+8)</text>
+
+    <!-- Row 2 -->
+    <rect x="38" y="532" width="292" height="30" rx="6" fill="#151D29" stroke="#2D3B50" stroke-width="1"/>
+    <text class="sans card-ttl" x="50" y="551">Monotonic Seq</text>
+    <text class="sans muted" x="318" y="551" text-anchor="end">seq &lt;= lastSeq (+8)</text>
+
+    <rect x="344" y="532" width="292" height="30" rx="6" fill="#151D29" stroke="#2D3B50" stroke-width="1"/>
+    <text class="sans card-ttl" x="356" y="551">Freshness Window</text>
+    <text class="sans muted" x="624" y="551" text-anchor="end">8s / 15s hold (+6)</text>
+
+    <rect x="650" y="532" width="292" height="30" rx="6" fill="#151D29" stroke="#2D3B50" stroke-width="1"/>
+    <text class="sans card-ttl" x="662" y="551">Wire &amp; Fetch Meta</text>
+    <text class="sans muted" x="930" y="551" text-anchor="end">CL+TE · Sec-Fetch</text>
+  </g>
 </svg>

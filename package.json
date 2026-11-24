@@ -1,14 +1,32 @@
 {
   "name": "proxysnare",
   "version": "1.0.0",
-  "description": "Zero-dependency HTTP Repeater & Intercepting Proxy defense (detects and blocks Caido Repeater, Burp Suite Repeater, and mitmproxy tampering/replays in real time)",
+  "description": "Zero-dependency HTTP Repeater & Intercepting Proxy defense (Proof-of-Freshness HMAC-SHA256 + rotating honey-canary middleware, reverse proxy, browser guard, and Python stdlib verifier)",
   "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src/",
+    "bin/",
+    "LICENSE",
+    "README.md"
+  ],
   "bin": {
     "proxysnare": "./bin/proxysnare.js"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/HUSMUS9999/proxysnare.git"
+  },
+  "homepage": "https://github.com/HUSMUS9999/proxysnare#readme",
+  "bugs": {
+    "url": "https://github.com/HUSMUS9999/proxysnare/issues"
+  },
   "scripts": {
     "test": "node --test test/proxysnare.test.js",
-    "demo": "node bin/proxysnare.js demo"
+    "demo": "node bin/proxysnare.js demo",
+    "bench": "node benchmarks/run_unbiased_benchmark.js"
   },
   "engines": {
     "node": ">=20.0.0"
