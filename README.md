@@ -166,4 +166,4 @@ npm test
 ## Related Projects
 
 - **[Vibe-Slayer](https://github.com/HUSMUS9999/vibe-slayer)** — Zero-dependency Rust + C99 asset, binary, Web Component, and zero-geometry 3D stream protection platform.
-- **[CloakGate](https://github.com/HUSMUS9999/cloakgate)** — Drop-in CloakBrowser & anti-detect browser detection and blocking SDK + `<cloak-gate>` Web Component.
+- **[VeilBreak](https://github.com/HUSMUS9999/veilbreak)** — Universal zero-dependency anti-stealth & multi-engine browser integrity SDK, `<veil-break>` Web Component, middleware, and Python verifier.
