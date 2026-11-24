@@ -20,7 +20,13 @@
   <a href="LICENSE"><img src="assets/badges/license.svg" alt="license: MIT" /></a>
 </p>
 
-**ProxySnare** is a zero-dependency reverse-proxy shield, Express/Node.js middleware, drop-in browser guard, and Python stdlib verifier that detects and blocks **HTTP repeaters, intercepting security proxies, request tampering, and replay attacks** in real time — with **0% false positives for genuine browsers**.
+**ProxySnare** is a zero-dependency reverse-proxy shield, Express/Node.js middleware, drop-in browser guard, and Python stdlib verifier for defending web applications against HTTP repeaters, intercepting security proxies, request tampering, and replay attacks.
+
+## Problem & Solution
+
+**Problem:** Intercepting HTTP proxies and request repeaters capture a legitimate browser request — preserving its exact session `Cookie`, `Authorization`, `Origin`, `Sec-Fetch-*`, and CSRF token — then pause, edit JSON fields, and replay it at human pace. Standard WAFs, CSRF guards, Fetch Metadata checks, and rate limiters cannot distinguish those replays from genuine browser clicks.
+
+**Solution:** ProxySnare breaks the capture-and-replay loop at the protocol layer: a drop-in guard imports an ephemeral session key into non-extractable WebCrypto (`extractable: false`) and signs every protected `fetch()`/`XHR` with a single-use `HMAC-SHA256` Proof-of-Freshness bound to the exact body hash, monotonic sequence number, freshness window, and server-rotated honey-canary (`X-PS-Next-Canary`). Replayed, held, or modified requests fail immediately (`403`) while normal browsers advance seamlessly (`0%` false positives).
 
 ## Features
 
