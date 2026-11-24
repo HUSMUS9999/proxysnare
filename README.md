@@ -3,10 +3,10 @@
 </p>
 
 <p align="center">
-  <a href="docs/getting-started-beginners.md"><img src="https://img.shields.io/badge/UX-Plain--English%20CLI%20(ask)-purple" alt="Plain-English CLI" /></a>
-  <a href="#live-verification-caido-repeater-0591-vs-chrome-158"><img src="https://img.shields.io/badge/Caido%20%26%20Burp%20Repeater-Blocked%20(403)-red" alt="Repeater Blocked" /></a>
-  <a href="#installation--60-second-quickstart"><img src="https://img.shields.io/badge/dependencies-Zero%20(Node%20%3E%3D20%20%2B%20Python)-brightgreen" alt="Zero Dependencies" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" /></a>
+  <a href="docs/getting-started-beginners.md"><img src="assets/badges/nl-cli.svg" alt="CLI: Plain-English (ask)" /></a>
+  <a href="#live-verification-caido-repeater-0591-vs-chrome-158"><img src="assets/badges/repeater.svg" alt="Caido & Burp: Repeater Blocked (403)" /></a>
+  <a href="#installation--60-second-quickstart"><img src="assets/badges/deps.svg" alt="Deps: Zero (Node 20+ & Python)" /></a>
+  <a href="LICENSE"><img src="assets/badges/license.svg" alt="License: MIT" /></a>
 </p>
 
 **Zero-dependency HTTP Repeater & Intercepting Proxy defense that detects and blocks Caido Repeater, Burp Suite Repeater, mitmproxy, and manual HTTP request tampering/replays in real time — with zero false positives for normal browsers.**
