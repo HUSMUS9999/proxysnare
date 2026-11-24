@@ -1,0 +1,27 @@
+{
+  "name": "proxysnare",
+  "version": "1.0.0",
+  "description": "Zero-dependency HTTP Repeater & Intercepting Proxy defense (detects and blocks Caido Repeater, Burp Suite Repeater, and mitmproxy tampering/replays in real time)",
+  "main": "src/index.js",
+  "bin": {
+    "proxysnare": "./bin/proxysnare.js"
+  },
+  "scripts": {
+    "test": "node --test test/proxysnare.test.js",
+    "demo": "node bin/proxysnare.js demo"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "security",
+    "burp-suite",
+    "caido",
+    "repeater",
+    "proxy-detection",
+    "anti-replay",
+    "http-security",
+    "middleware"
+  ],
+  "license": "MIT"
+}
