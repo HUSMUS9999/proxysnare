@@ -2,8 +2,14 @@
 
 const http = require("node:http");
 const https = require("node:https");
+const querystring = require("node:querystring");
 const zlib = require("node:zlib");
-const { createProxySnareEngine, normalizePathname, stripSchemeAndAuthority } = require("./detector.js");
+const {
+  createProxySnareEngine,
+  normalizePathname,
+  stripSchemeAndAuthority,
+  isCliOrProxyUa,
+} = require("./detector.js");
 const { buildBrowserGuardScript } = require("./browser-guard.js");
 
 const HOP_BY_HOP_HEADERS = new Set([
@@ -32,6 +38,15 @@ const PROTECTED_FROM_CONN_STRIP = new Set([
   "true-client-ip",
 ]);
 
+const PROXY_HANDSHAKE_LEAK_HEADERS = [
+  "proxy-connection",
+  "x-burp-header",
+  "x-burp-collaborator",
+  "x-caido-id",
+  "x-caido-replay",
+  "x-mitmproxy",
+];
+
 function stripHopByHop(headers, { isRequest = false } = {}) {
   const out = {};
   const connTokens = new Set();
@@ -57,7 +72,6 @@ function escapeHtmlAttr(s) {
 }
 
 function readRequestBody(req, maxBytes = 1024 * 1024) {
-  // Check ONLY readableEnded (never req.complete, which llhttp sets while buffered bytes remain unread — HIGH-9)
   if (req.readableEnded) {
     return Promise.resolve(Buffer.alloc(0));
   }
@@ -80,7 +94,6 @@ function readRequestBody(req, maxBytes = 1024 * 1024) {
     const onData = (chunk) => {
       total += chunk.length;
       if (total > maxBytes) {
-        // Pause rather than destroy so caller can write HTTP 413 cleanly
         req.pause();
         finish(Object.assign(new Error("BODY_TOO_LARGE"), { statusCode: 413 }));
         return;
@@ -110,31 +123,124 @@ function sendJson(res, status, obj, extraHeaders = {}) {
   res.end(payload);
 }
 
+function validateHandshakeClientHeaders(req, mode, { requireScriptDest = false, fromTrustedProxy = false } = {}) {
+  const headers = req.headers || {};
+  const sfs = String(headers["sec-fetch-site"] || "").trim().toLowerCase();
+  const sfm = String(headers["sec-fetch-mode"] || "").trim().toLowerCase();
+  const sfd = String(headers["sec-fetch-dest"] || "").trim().toLowerCase();
+  const conn = String(headers["connection"] || "").trim().toLowerCase();
+  const acceptLang = String(headers["accept-language"] || "").trim();
+  const ua = String(headers["user-agent"] || "");
+  const secChUa = String(headers["sec-ch-ua"] || "");
+  const origin = String(headers["origin"] || "").trim();
+  const host = String(headers["host"] || "").trim().toLowerCase();
+
+  if (sfs.includes("cross-site")) {
+    return { ok: false, status: 403, error: "CROSS_SITE_HANDSHAKE_DENIED" };
+  }
+  if (origin && host) {
+    try {
+      const u = new URL(origin);
+      if ((u.protocol !== "http:" && u.protocol !== "https:") || u.username || u.password) {
+        return { ok: false, status: 403, error: "INVALID_ORIGIN_DENIED" };
+      }
+      const normHost = host.endsWith(":80") && u.protocol === "http:" ? host.slice(0, -3) : (host.endsWith(":443") && u.protocol === "https:" ? host.slice(0, -4) : host);
+      if (u.host.toLowerCase() !== normHost) {
+        return { ok: false, status: 403, error: "CROSS_ORIGIN_HANDSHAKE_DENIED" };
+      }
+    } catch {
+      return { ok: false, status: 403, error: "INVALID_ORIGIN_DENIED" };
+    }
+  }
+
+  if (mode === "strict" || mode === "balanced") {
+    for (const ph of PROXY_HANDSHAKE_LEAK_HEADERS) {
+      if (headers[ph] !== undefined) {
+        return { ok: false, status: 403, error: "PROXY_HEADER_DENIED" };
+      }
+    }
+    if (isCliOrProxyUa(ua, secChUa)) {
+      return { ok: false, status: 403, error: "NON_BROWSER_HANDSHAKE_DENIED" };
+    }
+    const cm = /Chrome\/(\d+)/i.exec(ua);
+    const fm = /Firefox\/(\d+)/i.exec(ua);
+    const claimsModern = (cm && Number(cm[1]) >= 80) || (fm && Number(fm[1]) >= 90);
+    if (claimsModern) {
+      if (!sfs || (sfs !== "same-origin" && sfs !== "same-site") || !sfm) {
+        return { ok: false, status: 403, error: "FETCH_METADATA_REQUIRED" };
+      }
+      if (requireScriptDest && sfd !== "script") {
+        return { ok: false, status: 403, error: "SCRIPT_FETCH_DEST_REQUIRED" };
+      }
+      if (!acceptLang) {
+        return { ok: false, status: 403, error: "ACCEPT_LANGUAGE_REQUIRED" };
+      }
+      if (!fromTrustedProxy && conn === "close") {
+        return { ok: false, status: 403, error: "REPEATER_CONNECTION_CLOSE" };
+      }
+    }
+  }
+
+  return { ok: true };
+}
+
+function isHtmlBootstrapNavigation(req) {
+  const headers = req.headers || {};
+  if (req.method !== "GET") return false;
+  const accept = String(headers["accept"] || "").toLowerCase();
+  const sfm = String(headers["sec-fetch-mode"] || "").trim().toLowerCase();
+  const sfd = String(headers["sec-fetch-dest"] || "").trim().toLowerCase();
+  const ua = String(headers["user-agent"] || "");
+  if (!accept.includes("text/html")) return false;
+  if (isCliOrProxyUa(ua, headers["sec-ch-ua"])) return false;
+  if (headers["content-length"] && headers["transfer-encoding"]) return false;
+  if (PROXY_HANDSHAKE_LEAK_HEADERS.some((h) => headers[h] !== undefined)) return false;
+  if (headers["x-original-url"] || headers["x-rewrite-url"]) return false;
+  const cm = /Chrome\/(\d+)/i.exec(ua);
+  const fm = /Firefox\/(\d+)/i.exec(ua);
+  const claimsModern = (cm && Number(cm[1]) >= 80) || (fm && Number(fm[1]) >= 90);
+  if (claimsModern && (sfm !== "navigate" || sfd !== "document")) return false;
+  return true;
+}
+
 /**
  * Plug-and-play middleware for raw Node `http.createServer`, Express, or Connect.
- * Serves `/__proxysnare/guard.js` and `/__proxysnare/handshake`, and inspects requests.
+ * Serves `/__proxysnare/guard.js`, `/__proxysnare/boot`, `/__proxysnare/handshake` (PS_ECDH_V2),
+ * and `/__proxysnare/health`, and inspects protected requests.
  */
 function createProxySnareMiddleware(options = {}) {
   const basePath = String(options.basePath || "/__proxysnare").replace(/\/+$/, "") || "/__proxysnare";
   const exposeDebugHeaders = options.exposeDebugHeaders !== false;
   const engine = createProxySnareEngine(options);
-  const guardJs = buildBrowserGuardScript({
-    basePath,
-    protectedRules: engine.serializeProtectedPathsForClient(),
-  });
+  const clientRules = engine.serializeProtectedPathsForClient();
 
   async function handleInner(req, res, next) {
     const urlStr = req.originalUrl || req.url || "/";
     const pathname = normalizePathname(urlStr);
+    const remoteRaw = String(req?.socket?.remoteAddress || req?.ip || "").trim();
+    const fromTrustedProxy = Boolean(remoteRaw && engine.trustedProxies.size > 0 && engine.trustedProxies.has(remoteRaw));
 
     if (req.method === "GET" && pathname === `${basePath}/guard.js`) {
+      const ip = engine.extractClientIp(req);
+      const ua = String(req.headers["user-agent"] || "");
+      const bootEligible =
+        engine.mode !== "off" &&
+        validateHandshakeClientHeaders(req, engine.mode, { requireScriptDest: true, fromTrustedProxy }).ok;
+      // Gate boot-token stamping on per-IP rate limit so /guard.js cannot exhaust maxBootTokens!
+      const boot = bootEligible && engine.allowHandshake(ip) ? engine.issueBootChallenge({ ip, userAgent: ua }) : null;
+      const script = buildBrowserGuardScript({
+        basePath,
+        protectedRules: clientRules,
+        initialBoot: boot,
+      });
       res.writeHead(200, {
         "Content-Type": "application/javascript; charset=utf-8",
-        "Cache-Control": "no-store",
+        "Cache-Control": "no-store, private",
+        "Vary": "User-Agent",
         "X-Content-Type-Options": "nosniff",
-        "Content-Length": Buffer.byteLength(guardJs),
+        "Content-Length": Buffer.byteLength(script),
       });
-      res.end(guardJs);
+      res.end(script);
       return true;
     }
 
@@ -143,11 +249,10 @@ function createProxySnareMiddleware(options = {}) {
       return true;
     }
 
-    if (req.method === "POST" && pathname === `${basePath}/handshake`) {
-      // Reject cross-site CSRF handshakes and enforce per-IP handshake rate limiting
-      const sfs = String(req.headers["sec-fetch-site"] || "").toLowerCase();
-      if (sfs.includes("cross-site")) {
-        sendJson(res, 403, { ok: false, error: "CROSS_SITE_HANDSHAKE_DENIED" });
+    if (req.method === "GET" && pathname === `${basePath}/boot`) {
+      const hdrCheck = validateHandshakeClientHeaders(req, engine.mode, { fromTrustedProxy });
+      if (!hdrCheck.ok) {
+        sendJson(res, hdrCheck.status, { ok: false, error: hdrCheck.error });
         return true;
       }
       const ip = engine.extractClientIp(req);
@@ -155,36 +260,113 @@ function createProxySnareMiddleware(options = {}) {
         sendJson(res, 429, { ok: false, error: "HANDSHAKE_RATE_LIMITED" });
         return true;
       }
-      // Safe whether express.json() ran before or after this middleware!
-      if (!req.rawBody && !req._body && !req.readableEnded) {
+      const boot = engine.issueBootChallenge({
+        ip,
+        userAgent: req.headers["user-agent"] || "",
+      });
+      if (!boot) {
+        sendJson(res, 503, { ok: false, error: "BOOT_CAPACITY_EXCEEDED" });
+        return true;
+      }
+      sendJson(res, 200, { ok: true, ...boot }, { "Vary": "Origin, User-Agent" });
+      return true;
+    }
+
+    if (req.method === "POST" && pathname === `${basePath}/handshake`) {
+      const hdrCheck = validateHandshakeClientHeaders(req, engine.mode, { fromTrustedProxy });
+      if (!hdrCheck.ok) {
+        sendJson(res, hdrCheck.status, { ok: false, error: hdrCheck.error });
+        return true;
+      }
+      const ip = engine.extractClientIp(req);
+      if (!engine.allowHandshake(ip)) {
+        sendJson(res, 429, { ok: false, error: "HANDSHAKE_RATE_LIMITED" });
+        return true;
+      }
+
+      let hsBody = {};
+      if (req.rawBody && Buffer.isBuffer(req.rawBody)) {
         try {
-          await readRequestBody(req, 4096);
+          hsBody = req.rawBody.length > 0 ? JSON.parse(req.rawBody.toString("utf8")) : {};
+        } catch {
+          sendJson(res, 400, { ok: false, error: "BAD_HANDSHAKE_JSON" });
+          return true;
+        }
+      } else if (req._body && req.body && typeof req.body === "object" && !Buffer.isBuffer(req.body)) {
+        hsBody = req.body;
+      } else if (!req.readableEnded) {
+        try {
+          const raw = await readRequestBody(req, 4096);
+          hsBody = raw.length > 0 ? JSON.parse(raw.toString("utf8")) : {};
         } catch (e) {
           sendJson(res, e.statusCode || 400, { ok: false, error: "BAD_HANDSHAKE" });
           return true;
         }
       }
+
+      if (!hsBody || typeof hsBody !== "object" || Array.isArray(hsBody)) {
+        sendJson(res, 400, { ok: false, error: "BAD_HANDSHAKE" });
+        return true;
+      }
+
+      const ua = req.headers["user-agent"] || "";
+      if (engine.mode !== "off" && engine.requireBootToken) {
+        const bootRes = engine.consumeBootChallenge({
+          bootToken: hsBody.bootToken,
+          powNonce: hsBody.powNonce,
+          ip,
+          userAgent: ua,
+        });
+        if (!bootRes.ok) {
+          sendJson(res, 403, { ok: false, error: bootRes.error });
+          return true;
+        }
+      }
+
+      // HTTP /handshake ALWAYS enforces ephemeral ECDH P-256 (PS_ECDH_V2) — ZERO plaintext sessionKeyHex on the wire!
+      if (typeof hsBody.clientPubB64 !== "string" || !hsBody.clientPubB64.trim()) {
+        sendJson(res, 400, { ok: false, error: "ECDH_KEY_REQUIRED" });
+        return true;
+      }
+
       const sess = engine.issueSession({
         ip,
-        userAgent: req.headers["user-agent"] || "",
+        userAgent: ua,
         origin: req.headers["origin"] || "",
+        clientPubB64: hsBody.clientPubB64,
       });
       if (!sess) {
         sendJson(res, 503, { ok: false, error: "SESSION_CAPACITY_EXCEEDED" });
+        return true;
+      }
+      if (sess.error) {
+        sendJson(res, 400, { ok: false, error: sess.error });
         return true;
       }
       sendJson(res, 200, { ok: true, ...sess }, { "Vary": "Origin, User-Agent" });
       return true;
     }
 
-    // Pass RAW urlStr so pre-hash and decoded-%3F/%23 bypasses are caught (Loop 3 CRIT-3 & HIGH-7)
-    const isProtected = engine.isPathProtected(urlStr);
+    const overrideUrls = [req.headers?.["x-original-url"], req.headers?.["x-rewrite-url"]]
+      .flat()
+      .filter((u) => typeof u === "string" && u.trim() !== "");
+    const isProtected =
+      engine.isPathProtected(urlStr) || overrideUrls.some((u) => engine.isPathProtected(u));
     const hasPsHeader = Object.keys(req.headers || {}).some((k) => k.toLowerCase().startsWith("x-ps-"));
 
-    // Only buffer body on protected paths or when Proof-of-Freshness headers are present.
-    // Guard req.body behind req._body & non-bodyless methods so Express 4's default req.body={} on GET never breaks signing (HIGH-9)!
-    const methodHasBody = req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS";
+    const isCorsPreflight =
+      req.method === "OPTIONS" &&
+      req.headers?.["access-control-request-method"] &&
+      req.headers?.["origin"] &&
+      !req.headers?.["content-length"] &&
+      !req.headers?.["transfer-encoding"];
+    const methodHasBody =
+      req.method !== "GET" &&
+      req.method !== "HEAD" &&
+      !(req.method === "OPTIONS" && isCorsPreflight);
+
     let bodyBuf = Buffer.alloc(0);
+    const reqCt = String(req.headers?.["content-type"] || "").toLowerCase();
     if (req.rawBody && Buffer.isBuffer(req.rawBody)) {
       bodyBuf = req.rawBody;
     } else if (methodHasBody && Buffer.isBuffer(req.body)) {
@@ -192,7 +374,27 @@ function createProxySnareMiddleware(options = {}) {
     } else if (methodHasBody && typeof req.body === "string") {
       bodyBuf = Buffer.from(req.body, "utf8");
     } else if (methodHasBody && req._body && req.body && typeof req.body === "object") {
-      bodyBuf = Buffer.from(JSON.stringify(req.body), "utf8");
+      if (
+        String(req.headers?.["content-length"] || "").trim() === "0" &&
+        !req.headers?.["transfer-encoding"] &&
+        Object.keys(req.body).length === 0
+      ) {
+        bodyBuf = Buffer.alloc(0);
+      } else if (reqCt.includes("application/x-www-form-urlencoded")) {
+        const usp = new URLSearchParams();
+        for (const [k, v] of Object.entries(req.body)) {
+          if (Array.isArray(v)) {
+            for (const item of v) {
+              if (item !== undefined && item !== null) usp.append(k, String(item));
+            }
+          } else if (v !== undefined && v !== null) {
+            usp.append(k, String(v));
+          }
+        }
+        bodyBuf = Buffer.from(usp.toString(), "utf8");
+      } else {
+        bodyBuf = Buffer.from(JSON.stringify(req.body), "utf8");
+      }
     } else if ((isProtected || hasPsHeader) && methodHasBody) {
       try {
         bodyBuf = await readRequestBody(req, options.maxBodyBytes || 1024 * 1024);
@@ -201,13 +403,29 @@ function createProxySnareMiddleware(options = {}) {
         return true;
       }
       req.rawBody = bodyBuf;
-      req._body = true; // prevents downstream express.json() from hanging on consumed stream
+      req._body = true;
       const ct = String(req.headers["content-type"] || "").toLowerCase();
-      if (ct.includes("application/json") && bodyBuf.length > 0 && req.body === undefined) {
-        try {
-          req.body = JSON.parse(bodyBuf.toString("utf8"));
-        } catch {
-          // leave req.body undefined for downstream handler to reject malformed JSON
+      const isEmptyPlaceholder =
+        req.body &&
+        typeof req.body === "object" &&
+        !Array.isArray(req.body) &&
+        !Buffer.isBuffer(req.body) &&
+        Object.keys(req.body).length === 0;
+      if (req.body === undefined || isEmptyPlaceholder) {
+        if (/\bapplication\/(?:[a-z0-9.+-]+\+)?json\b/.test(ct)) {
+          if (bodyBuf.length === 0) {
+            req.body = {};
+          } else {
+            try {
+              req.body = JSON.parse(bodyBuf.toString("utf8"));
+            } catch {
+              // leave req.body undefined for downstream handler
+            }
+          }
+        } else if (ct.includes("application/x-www-form-urlencoded")) {
+          req.body = querystring.parse(bodyBuf.toString("utf8"));
+        } else if (ct.startsWith("text/")) {
+          req.body = bodyBuf.toString("utf8");
         }
       }
     }
@@ -227,6 +445,7 @@ function createProxySnareMiddleware(options = {}) {
       body: bodyBuf,
       ip: engine.extractClientIp(req),
       rawHeaderLines,
+      fromTrustedProxy,
     });
     req.proxySnare = verdict;
 
@@ -237,8 +456,12 @@ function createProxySnareMiddleware(options = {}) {
     if (verdict.nextCanary) {
       res.setHeader("X-PS-Next-Canary", verdict.nextCanary);
     }
+    if (verdict.rehandshakeRecommended) {
+      res.setHeader("X-PS-Rehandshake", "1");
+    }
 
     if (verdict.blocked) {
+      const extra = verdict.rehandshakeRecommended ? { "X-PS-Rehandshake": "1" } : {};
       const body = exposeDebugHeaders
         ? {
             ok: false,
@@ -248,7 +471,7 @@ function createProxySnareMiddleware(options = {}) {
             reasons: verdict.reasons.map((r) => r.code),
           }
         : { ok: false, error: "REPEATER_OR_PROXY_BLOCKED" };
-      sendJson(res, 403, body);
+      sendJson(res, 403, body, extra);
       return true;
     }
 
@@ -289,7 +512,6 @@ function injectGuardIntoHtml(html, basePath) {
   if (new RegExp(`<script\\b[^>]*\\bsrc=["']${safeSrc.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["']`, "i").test(html)) {
     return html;
   }
-  // Inject early in <head> (so guard instruments fetch/XHR before inline scripts run) or before </head>
   if (/<head(?:\s[^>]*)?>/i.test(html)) {
     return html.replace(/<head(?:\s[^>]*)?>/i, (m) => `${m}${tag}`);
   }
@@ -303,17 +525,15 @@ function injectGuardIntoHtml(html, basePath) {
 }
 
 function encodeForwardPathname(normPath) {
-  // Re-encode each segment to valid RFC 3986 ASCII so %20/UTF-8 never throw ERR_UNESCAPED_CHARACTERS
-  // and literal '?'/'#' never desync upstream query/fragment parsing (Loop 3 CRIT-3)
   return normPath
     .split("/")
-    .map((seg) => encodeURIComponent(seg))
+    .map((seg) => encodeURIComponent(seg.replace(/%3F/gi, "?")))
     .join("/");
 }
 
 /**
  * Standalone reverse-proxy shield that sits in front of ANY backend (`target`),
- * auto-injects `/__proxysnare/guard.js` into HTML responses, and blocks Caido/Burp Repeater.
+ * auto-injects `/__proxysnare/guard.js` into HTML responses, and blocks curl & Caido/Burp Repeater.
  */
 function createProxySnareServer(options = {}) {
   const targetUrl = new URL(options.target || "http://127.0.0.1:3000");
@@ -330,12 +550,21 @@ function createProxySnareServer(options = {}) {
   const baseTargetPath = targetUrl.pathname && targetUrl.pathname !== "/" ? targetUrl.pathname.replace(/\/+$/, "") : "";
 
   const server = http.createServer((req, res) => {
-    Promise.resolve(middleware(req, res))
+    const htmlBootstrapProbe =
+      injectGuard &&
+      middleware.engine.mode !== "off" &&
+      middleware.engine.mode !== "monitor" &&
+      middleware.engine.isPathProtected("/") &&
+      !Object.keys(req.headers || {}).some((k) => k.toLowerCase().startsWith("x-ps-")) &&
+      isHtmlBootstrapNavigation(req) &&
+      !normalizePathname(req.url || "/").startsWith(`${basePath}/`);
+
+    const middlewareStep = htmlBootstrapProbe ? Promise.resolve(false) : Promise.resolve(middleware(req, res));
+
+    middlewareStep
       .then((handled) => {
         if (handled) return;
 
-        // Reuse exact stripSchemeAndAuthority so `http://host?x=/api/secret` NEVER desyncs (Loop 4 CRIT-1)
-        // and encode only unescaped non-RFC3986 bytes in query so valid %20/%3A are NEVER double-encoded (Loop 4 HIGH-4)
         let rawFwd = stripSchemeAndAuthority(req.url || "/");
         let fwdSearch = "";
         const qIdx = rawFwd.indexOf("?");
@@ -346,10 +575,14 @@ function createProxySnareServer(options = {}) {
         const safeSearch = fwdSearch
           ? fwdSearch.replace(/[^A-Za-z0-9\-._~!$&'()*+,;=:@/?%]|%(?![0-9a-fA-F]{2})/g, (ch) => encodeURIComponent(ch))
           : "";
-        let fwdPath = `${encodeForwardPathname(normalizePathname(rawFwd))}${safeSearch}`;
+        const normFwd = normalizePathname(rawFwd);
+        const trailingSlash = rawFwd.length > 1 && rawFwd.endsWith("/") && normFwd !== "/" ? "/" : "";
+        let fwdPath = `${encodeForwardPathname(normFwd)}${trailingSlash}${safeSearch}`;
         if (baseTargetPath) fwdPath = `${baseTargetPath}${fwdPath}`;
 
         const fwdHeaders = stripHopByHop(req.headers, { isRequest: true });
+        delete fwdHeaders["x-original-url"];
+        delete fwdHeaders["x-rewrite-url"];
         fwdHeaders.host = targetUrl.host;
         const remoteIp = String(req.socket?.remoteAddress || "").replace(/^::ffff:/, "");
         if (remoteIp) {
@@ -364,12 +597,16 @@ function createProxySnareServer(options = {}) {
           fwdHeaders["content-length"] = String(len);
           delete fwdHeaders["transfer-encoding"];
         }
-        // Only ask for identity encoding when client asks for HTML (preserves compression on JS/CSS/API!)
         const acceptHdr = String(req.headers["accept"] || "").toLowerCase();
         if (injectGuard && acceptHdr.includes("text/html")) {
           fwdHeaders["accept-encoding"] = "identity";
         }
+        if (htmlBootstrapProbe) {
+          delete fwdHeaders["if-modified-since"];
+          delete fwdHeaders["if-none-match"];
+        }
 
+        let responded = false;
         const upstreamReq = clientMod.request(
           {
             protocol: targetUrl.protocol,
@@ -382,15 +619,96 @@ function createProxySnareServer(options = {}) {
           },
           (upRes) => {
             upRes.on("error", () => {
+              if (responded) return;
+              responded = true;
               if (!res.headersSent) sendJson(res, 502, { ok: false, error: "UPSTREAM_ERROR" });
               else res.destroy();
             });
 
             const statusCode = upRes.statusCode || 200;
             const ct = String(upRes.headers["content-type"] || "").toLowerCase();
+
+            // For wildcard HTML-bootstrap probes, ONLY allow genuine text/html responses (or header-only 3xx redirects without forwarding any non-HTML body!)
+            if (htmlBootstrapProbe && !ct.includes("text/html")) {
+              if (statusCode >= 301 && statusCode <= 308 && statusCode !== 304 && Boolean(upRes.headers["location"])) {
+                responded = true;
+                const redirHeaders = stripHopByHop(upRes.headers);
+                delete redirHeaders["content-length"];
+                delete redirHeaders["content-encoding"];
+                delete redirHeaders["content-type"];
+                redirHeaders["content-length"] = "0";
+                res.writeHead(statusCode, redirHeaders);
+                res.end();
+                upRes.destroy();
+                return;
+              }
+              responded = true;
+              if (typeof options.onDetect === "function") {
+                try {
+                  options.onDetect({
+                    ok: false,
+                    blocked: true,
+                    score: middleware.engine.mode === "strict" ? 8 : 6,
+                    threshold: middleware.engine.mode === "strict" ? 4 : 6,
+                    mode: middleware.engine.mode,
+                    reasons: [{ code: "REPEATER_PROOF_MISSING", weight: middleware.engine.mode === "strict" ? 8 : 6, detail: "Non-HTML protected response rejected on wildcard HTML bootstrap probe" }],
+                    nextCanary: null,
+                    rehandshakeRecommended: false,
+                    method: req.method,
+                    path: normalizePathname(req.url || "/"),
+                    ip: middleware.engine.extractClientIp(req),
+                    sessionId: null,
+                  });
+                } catch {}
+              }
+              const errBody = exposeDebugHeaders
+                ? { ok: false, error: "REPEATER_OR_PROXY_BLOCKED", reasons: ["REPEATER_PROOF_MISSING"] }
+                : { ok: false, error: "REPEATER_OR_PROXY_BLOCKED" };
+              sendJson(res, 403, errBody);
+              upRes.destroy();
+              return;
+            }
+
+            // Never let an unauthenticated CORS OPTIONS preflight leak body from a non-CORS upstream route!
+            if (
+              req.method === "OPTIONS" &&
+              Boolean(req.headers["access-control-request-method"]) &&
+              !req.proxySnare?.nextCanary &&
+              middleware.engine.mode !== "off" &&
+              middleware.engine.mode !== "monitor" &&
+              middleware.engine.isPathProtected(req.url || "/") &&
+              !upRes.headers["access-control-allow-origin"]
+            ) {
+              responded = true;
+              if (typeof options.onDetect === "function") {
+                try {
+                  options.onDetect({
+                    ok: false,
+                    blocked: true,
+                    score: 8,
+                    threshold: middleware.engine.mode === "strict" ? 4 : 6,
+                    mode: middleware.engine.mode,
+                    reasons: [{ code: "CORS_PREFLIGHT_NOT_ENABLED", weight: 8, detail: "Unauthenticated OPTIONS preflight targeting non-CORS protected route" }],
+                    nextCanary: null,
+                    rehandshakeRecommended: false,
+                    method: req.method,
+                    path: normalizePathname(req.url || "/"),
+                    ip: middleware.engine.extractClientIp(req),
+                    sessionId: null,
+                  });
+                } catch {}
+              }
+              sendJson(res, 403, { ok: false, error: "CORS_PREFLIGHT_NOT_ENABLED" });
+              upRes.destroy();
+              return;
+            }
+
             const outHeaders = stripHopByHop(upRes.headers);
             if (req.proxySnare?.nextCanary) {
               outHeaders["x-ps-next-canary"] = req.proxySnare.nextCanary;
+            }
+            if (req.proxySnare?.rehandshakeRecommended) {
+              outHeaders["x-ps-rehandshake"] = "1";
             }
             if (exposeDebugHeaders) {
               outHeaders["x-proxysnare-score"] = String(req.proxySnare?.score ?? 0);
@@ -445,6 +763,7 @@ function createProxySnareServer(options = {}) {
                 const buf = Buffer.from(html, "utf8");
                 outHeaders["content-length"] = String(buf.length);
                 delete outHeaders["etag"];
+                delete outHeaders["last-modified"];
                 res.writeHead(statusCode, outHeaders);
                 res.end(buf);
               });
@@ -460,6 +779,8 @@ function createProxySnareServer(options = {}) {
           upstreamReq.destroy(new Error("UPSTREAM_TIMEOUT"));
         });
         upstreamReq.on("error", () => {
+          if (responded) return;
+          responded = true;
           if (!res.headersSent) {
             sendJson(res, 502, { ok: false, error: "UPSTREAM_UNREACHABLE" });
           } else {
@@ -499,7 +820,11 @@ function createProxySnareServer(options = {}) {
       });
     },
     close() {
-      return new Promise((resolve) => server.close(() => resolve()));
+      return new Promise((resolve) => {
+        if (typeof server.closeIdleConnections === "function") server.closeIdleConnections();
+        server.close(() => resolve());
+        if (typeof server.closeAllConnections === "function") server.closeAllConnections();
+      });
     },
   };
 }

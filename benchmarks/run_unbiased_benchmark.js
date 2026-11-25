@@ -2,7 +2,7 @@
 "use strict";
 
 /**
- * ProxySnare — Multi-Defense Live HTTP Benchmark Suite.
+ * ProxySnare — Multi-Defense Live HTTP Benchmark Suite (PS_ECDH_V2).
  *
  * Compares ProxySnare (balanced & strict) head-to-head against 6 standard HTTP
  * defense baselines over real local TCP/HTTP sockets:
@@ -12,15 +12,16 @@
  *   4. OWASP Fetch Metadata + Origin Guard (Sec-Fetch-Site + Origin)
  *   5. Stateless Short-TTL HMAC Signing (static key + 30s TTL, no nonce)
  *   6. Stateless HMAC (8s TTL) + Single-Use Nonce Cache (fair replay-resistant baseline)
- *   7. ProxySnare (balanced, 15s freshness)
- *   8. ProxySnare (strict, 8s freshness)
+ *   7. ProxySnare (balanced, 15s freshness, PS_ECDH_V2 + PoW)
+ *   8. ProxySnare (strict, 8s freshness, PS_ECDH_V2 + PoW)
  *
  * Methodology:
- *   - 100 warmup requests per defense before timing so V8 JIT is hot for every row.
- *   - Client only computes HMAC for HMAC-based defenses (no crypto work billed to baseline/CSRF/RL/Fetch).
- *   - Burst Flood sends 75 UNIQUE fresh valid requests (NOT replaying an old nonce!) so it genuinely tests
- *     flood throttling rather than exact replay.
- *   - 300 sequential live POSTs measured per defense for median / p95 latency and throughput.
+ *   - 400-request global pre-warmup + 100 warmup + 300 measured sequential POSTs per defense
+ *     interleaved across 3 rounds to eliminate row-order JIT/frequency bias.
+ *   - Client only computes HMAC for HMAC-based defenses; ProxySnare uses full ephemeral ECDH P-256
+ *     + HKDF-SHA256 + boot-token PoW handshake (handshake time reported separately).
+ *   - Unique Flood sends 75 UNIQUE fresh valid requests (NOT replaying an old nonce!).
+ *   - Pass `--write` (or `--out <path>`) to write results JSON without clobbering tracked baselines by default.
  */
 
 const crypto = require("node:crypto");
@@ -29,7 +30,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { performance } = require("node:perf_hooks");
 
-const { createProxySnareMiddleware } = require("../src/index.js");
+const { createProxySnareMiddleware, solvePowChallenge } = require("../src/index.js");
+const pkg = require("../package.json");
 
 const STATIC_HMAC_KEY = "bench-static-client-signing-key-32b";
 const CSRF_TOKEN = "csrf-tok-9f8e7d6c5b4a3210";
@@ -59,29 +61,34 @@ function startServer(handler) {
         server: srv,
         port: srv.address().port,
         base: `http://127.0.0.1:${srv.address().port}`,
-        close: () => new Promise((r) => srv.close(r)),
+        close: () =>
+          new Promise((r) => {
+            if (typeof srv.closeAllConnections === "function") srv.closeAllConnections();
+            srv.close(r);
+          }),
       });
     });
   });
 }
 
-const keepAliveAgent = new http.Agent({ keepAlive: true, maxSockets: 8 });
+const keepAliveAgent = new http.Agent({ keepAlive: true, maxSockets: 16 });
 
-function httpPost({ port, reqPath = "/api/transfer", headers = {}, body = '{"amount":42}', agent = keepAliveAgent }) {
+function httpReq({ port, method = "POST", reqPath = "/api/transfer", headers = {}, body = null, agent = keepAliveAgent }) {
   return new Promise((resolve, reject) => {
-    const buf = Buffer.from(body, "utf8");
+    const buf = body !== null ? Buffer.from(body, "utf8") : null;
+    const reqHeaders = { ...headers };
+    if (buf !== null) {
+      if (!reqHeaders["Content-Type"]) reqHeaders["Content-Type"] = "application/json";
+      reqHeaders["Content-Length"] = buf.length;
+    }
     const req = http.request(
       {
         hostname: "127.0.0.1",
         port,
         path: reqPath,
-        method: "POST",
+        method,
         agent,
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": buf.length,
-          ...headers,
-        },
+        headers: reqHeaders,
       },
       (res) => {
         const chunks = [];
@@ -96,14 +103,18 @@ function httpPost({ port, reqPath = "/api/transfer", headers = {}, body = '{"amo
       }
     );
     req.on("error", reject);
-    req.end(buf);
+    if (buf !== null) req.end(buf);
+    else req.end();
   });
+}
+
+function httpPost(opts) {
+  return httpReq({ method: "POST", body: '{"amount":42}', ...opts });
 }
 
 async function buildDefenses() {
   const defs = [];
 
-  // 1. Baseline: Unprotected Node.js HTTP API
   defs.push({
     id: "baseline",
     name: "Unprotected Node.js HTTP API",
@@ -117,7 +128,6 @@ async function buildDefenses() {
     }),
   });
 
-  // 2. Double-Submit CSRF Token Guard
   defs.push({
     id: "csrf_double_submit",
     name: "Double-Submit CSRF Guard",
@@ -139,7 +149,6 @@ async function buildDefenses() {
     }),
   });
 
-  // 3. Sliding-Window Rate Limiter (60 req/min per IP)
   const rlHits = new Map();
   defs.push({
     id: "rate_limiter",
@@ -165,7 +174,6 @@ async function buildDefenses() {
     }),
   });
 
-  // 4. OWASP Fetch Metadata + Origin Guard
   defs.push({
     id: "fetch_metadata",
     name: "Fetch Metadata + Origin Guard",
@@ -187,7 +195,6 @@ async function buildDefenses() {
     }),
   });
 
-  // 5. Stateless Short-TTL HMAC Signing (static key + 30s TTL, no nonce)
   defs.push({
     id: "stateless_hmac",
     name: "Stateless HMAC (30s TTL)",
@@ -214,7 +221,6 @@ async function buildDefenses() {
     }),
   });
 
-  // 6. Fair Replay-Resistant Baseline: Stateless HMAC (8s TTL) + Single-Use Nonce Cache
   const hmacNonces = new Map();
   defs.push({
     id: "hmac_8s_nonce",
@@ -251,7 +257,6 @@ async function buildDefenses() {
     }),
   });
 
-  // 7 & 8. ProxySnare (balanced & strict)
   for (const mode of ["balanced", "strict"]) {
     const mw = createProxySnareMiddleware({
       mode,
@@ -286,6 +291,7 @@ async function createClientHelper(def) {
     "Sec-Fetch-Dest": "empty",
     "Sec-CH-UA": '"Chromium";v="158", "Not.A/Brand";v="24", "Google Chrome";v="158"',
     "Sec-CH-UA-Platform": '"Linux"',
+    "Accept-Language": "en-US,en;q=0.9",
   };
   if (def.clientKind === "csrf") {
     baseHeaders["Cookie"] = `csrf_tok=${CSRF_TOKEN}`;
@@ -293,12 +299,32 @@ async function createClientHelper(def) {
   }
 
   let psState = null;
+  let handshakeMs = null;
   if (def.clientKind === "proxysnare") {
-    const hs = await httpPost({ port, reqPath: "/__proxysnare/handshake", headers: baseHeaders, body: "{}" });
+    const t0 = performance.now();
+    const bootRes = await httpReq({ port, method: "GET", reqPath: "/__proxysnare/boot", headers: baseHeaders });
+    if (bootRes.status !== 200) throw new Error(`Boot failed on ${def.id}: HTTP ${bootRes.status} ${bootRes.body}`);
+    const boot = JSON.parse(bootRes.body);
+    const powNonce = solvePowChallenge("PS_POW_V2", boot.challenge, boot.difficulty || 0);
+    const ecdh = crypto.createECDH("prime256v1");
+    ecdh.generateKeys();
+    const clientPubB64 = ecdh.getPublicKey().toString("base64");
+
+    const hs = await httpPost({
+      port,
+      reqPath: "/__proxysnare/handshake",
+      headers: baseHeaders,
+      body: JSON.stringify({ protocol: "PS_ECDH_V2", clientPubB64, bootToken: boot.bootToken, powNonce }),
+    });
+    if (hs.status !== 200) throw new Error(`Handshake failed on ${def.id}: HTTP ${hs.status} ${hs.body}`);
     const parsed = JSON.parse(hs.body);
+    const shared = ecdh.computeSecret(Buffer.from(parsed.serverPubB64, "base64"));
+    const info = Buffer.from(`PS_ECDH_V2|${parsed.sessionId}|${clientPubB64}|${parsed.serverPubB64}`, "utf8");
+    const keyBuf = Buffer.from(crypto.hkdfSync("sha256", shared, Buffer.from(parsed.saltB64, "base64"), info, 32));
+    handshakeMs = Number((performance.now() - t0).toFixed(3));
     psState = {
       sid: parsed.sessionId,
-      keyHex: parsed.sessionKeyHex,
+      keyBuf,
       canary: parsed.canary,
       seq: 0,
     };
@@ -322,7 +348,7 @@ async function createClientHelper(def) {
       const nonce = crypto.randomBytes(12).toString("hex");
       const bh = sha256Hex(Buffer.from(body));
       const msg = `PS1|POST|${reqPath}|${bh}|${psState.seq}|${ts}|${nonce}|${psState.canary}`;
-      const proof = hmacHex(Buffer.from(psState.keyHex, "hex"), msg);
+      const proof = hmacHex(psState.keyBuf, msg);
       hdr["X-PS-Session"] = psState.sid;
       hdr["X-PS-Seq"] = String(psState.seq);
       hdr["X-PS-Ts"] = String(ts);
@@ -342,7 +368,7 @@ async function createClientHelper(def) {
     return { resp, headers, body };
   }
 
-  return { buildSignedHeaders, sendClean, baseHeaders };
+  return { buildSignedHeaders, sendClean, baseHeaders, handshakeMs };
 }
 
 function percentile(sorted, p) {
@@ -352,36 +378,38 @@ function percentile(sorted, p) {
 }
 
 async function main() {
+  const args = process.argv.slice(2);
+  const shouldWrite = args.includes("--write") || args.includes("--out");
+  const outIdx = args.indexOf("--out");
+  const outPath = outIdx >= 0 && args[outIdx + 1] ? path.resolve(args[outIdx + 1]) : path.join(__dirname, "results.json");
+
   const defs = await buildDefenses();
   const report = [];
 
   try {
-    // Global V8 HTTP parser & loopback TCP warmup before measuring any row
     const warmBaseline = await createClientHelper(defs[0]);
     for (let g = 0; g < 400; g++) {
       await warmBaseline.sendClean('{"prewarm":1}');
     }
 
+    // Prepare security tests & capture held requests simultaneously across all 8 servers (saves ~58s!)
+    const secClients = [];
     for (const def of defs) {
-      // === PART 1: SECURITY & FALSE-POSITIVE MATRIX (6 real scenarios) ===
       const client = await createClientHelper(def);
-
-      // 1-2. Genuine Browser Click #1 & #2
       const c1 = await client.sendClean('{"amount":42}');
       const c2 = await client.sendClean('{"amount":43}');
-
-      // 3. Exact Repeater Replay of Click #1 verbatim
       const replay = await httpPost({ port: def.srv.port, headers: c1.headers, body: c1.body });
-
-      // 4. Body-Tampered Repeater Request (edit amount 42 -> 999999 on captured headers)
       const tamper = await httpPost({ port: def.srv.port, headers: c1.headers, body: '{"amount":999999}' });
-
-      // 5. Intercept-Hold & Release: capture a fresh valid request, hold 8.3s, then release unmodified
       const heldHeaders = client.buildSignedHeaders('{"amount":55}');
-      await new Promise((r) => setTimeout(r, 8300));
+      secClients.push({ def, client, c1, c2, replay, tamper, heldHeaders });
+    }
+
+    await new Promise((r) => setTimeout(r, 8300));
+
+    for (const item of secClients) {
+      const { def, client, c1, c2, replay, tamper, heldHeaders } = item;
       const interceptHold = await httpPost({ port: def.srv.port, headers: heldHeaders, body: '{"amount":55}' });
 
-      // 6. Cross-Origin CSRF Probe
       const csrfProbe = await httpPost({
         port: def.srv.port,
         headers: {
@@ -394,118 +422,145 @@ async function main() {
         body: '{"amount":42}',
       });
 
-      // 7. Stripped Proof + Proxy Header + Connection: close Replay
-      const strippedHeaders = {
-        "User-Agent": BROWSER_UA,
-        "Cookie": `csrf_tok=${CSRF_TOKEN}`,
-        "X-CSRF-Token": CSRF_TOKEN,
-        "Proxy-Connection": "keep-alive",
-        "Connection": "close",
-      };
-      const proxyStripped = await httpPost({ port: def.srv.port, headers: strippedHeaders, body: '{"amount":42}', agent: false });
+      const proxyStripped = await httpPost({
+        port: def.srv.port,
+        headers: {
+          "User-Agent": BROWSER_UA,
+          "Cookie": `csrf_tok=${CSRF_TOKEN}`,
+          "X-CSRF-Token": CSRF_TOKEN,
+          "Proxy-Connection": "keep-alive",
+          "Connection": "close",
+        },
+        body: '{"amount":42}',
+        agent: false,
+      });
 
-      // 8. Genuine Burst Flood: 75 UNIQUE fresh valid requests (tests rate limiting, NOT duplicate nonce replay!)
-      let burstBlocked = false;
+      let burstStatus = 200;
       if (def.resetState) def.resetState();
       const burstClient = await createClientHelper(def);
       for (let b = 0; b < 75; b++) {
         const br = await burstClient.sendClean(`{"burst":${b}}`);
-        if (br.resp.status === 429 || br.resp.status === 403) {
-          burstBlocked = true;
+        if (br.resp.status >= 400) {
+          burstStatus = br.resp.status;
           break;
         }
       }
 
-      // === PART 2: WARM THROUGHPUT & LATENCY BENCHMARK (100 warmup + 300 measured sequential POSTs) ===
-      if (def.resetState) def.resetState();
-      const perfClient = await createClientHelper(def);
-      for (let w = 0; w < 100; w++) {
-        if (def.resetState && w % 50 === 0) def.resetState();
-        const wr = await perfClient.sendClean(`{"warm":${w}}`);
-        if (wr.resp.status !== 200) {
-          throw new Error(`Warmup failed on ${def.id} at w=${w}: HTTP ${wr.resp.status} ${wr.resp.body}`);
-        }
-      }
+      item.sec = {
+        handshakeMs: client.handshakeMs,
+        c1: c1.resp.status,
+        c2: c2.resp.status,
+        csrf: csrfProbe.status,
+        replay: replay.status,
+        tamper: tamper.status,
+        hold8s: interceptHold.status,
+        proxy: proxyStripped.status,
+        uniqueFloodStatus: burstStatus,
+      };
+    }
 
-      const N = 300;
-      const latencies = [];
-      let totalMeasuredMs = 0;
-      for (let i = 0; i < N; i++) {
-        if (def.resetState && i % 50 === 0) def.resetState();
-        const t0 = performance.now();
-        const r = await perfClient.sendClean(`{"amount":${i}}`);
-        const dt = performance.now() - t0;
-        latencies.push(dt);
-        totalMeasuredMs += dt;
-        if (r.resp.status !== 200) {
-          throw new Error(`Perf run failed on ${def.id} at i=${i}: HTTP ${r.resp.status} ${r.resp.body}`);
+    // Interleaved 3-round warm perf measurement (100 warmup + 3x100 measured = 300 POSTs per defense)
+    const perfClients = new Map();
+    const perfLatencies = new Map();
+    for (const def of defs) {
+      if (def.resetState) def.resetState();
+      const pc = await createClientHelper(def);
+      for (let w = 0; w < 100; w++) {
+        if (def.id === "rate_limiter" && w % 50 === 0) def.resetState();
+        const wr = await pc.sendClean(`{"warm":${w}}`);
+        if (wr.resp.status !== 200) throw new Error(`Warmup failed on ${def.id}: HTTP ${wr.resp.status}`);
+      }
+      if (def.resetState) def.resetState();
+      perfClients.set(def.id, pc);
+      perfLatencies.set(def.id, []);
+    }
+
+    for (let round = 0; round < 3; round++) {
+      const order = round % 2 === 0 ? defs : [...defs].reverse();
+      for (const def of order) {
+        const pc = perfClients.get(def.id);
+        const lats = perfLatencies.get(def.id);
+        for (let i = 0; i < 100; i++) {
+          if (def.id === "rate_limiter" && i % 50 === 0) def.resetState();
+          const t0 = performance.now();
+          const r = await pc.sendClean(`{"round":${round},"amount":${i}}`);
+          lats.push(performance.now() - t0);
+          if (r.resp.status !== 200) throw new Error(`Perf failed on ${def.id}: HTTP ${r.resp.status}`);
         }
       }
+    }
+
+    for (const item of secClients) {
+      const { def, sec } = item;
+      const latencies = perfLatencies.get(def.id);
+      const totalMeasuredMs = latencies.reduce((a, b) => a + b, 0);
       latencies.sort((a, b) => a - b);
 
       const attacks = {
-        crossOriginCsrfBlocked: csrfProbe.status >= 400,
-        exactReplayBlocked: replay.status >= 400,
-        bodyTamperBlocked: tamper.status >= 400,
-        interceptHold8sBlocked: interceptHold.status >= 400,
-        proxyStrippedBlocked: proxyStripped.status >= 400,
-        uniqueBurstFloodBlocked: burstBlocked,
+        crossOriginCsrfBlocked: sec.csrf >= 400,
+        exactReplayBlocked: sec.replay >= 400,
+        bodyTamperBlocked: sec.tamper >= 400,
+        interceptHold8sBlocked: sec.hold8s >= 400,
+        proxyStrippedBlocked: sec.proxy >= 400,
+        uniqueBurstFloodBlocked: sec.uniqueFloodStatus >= 400,
       };
-      const attacksBlockedCount = Object.values(attacks).filter(Boolean).length;
-
+      const blockedCount = Object.values(attacks).filter(Boolean).length;
       const row = {
         id: def.id,
         name: def.name,
         clientJsRequired: def.clientJsRequired,
         worksForNonBrowserApis: def.worksForNonBrowserApis,
-        genuineClick1Ok: c1.resp.status === 200,
-        genuineClick2Ok: c2.resp.status === 200,
-        falsePositives: (c1.resp.status === 200 ? 0 : 1) + (c2.resp.status === 200 ? 0 : 1),
+        genuineClick1Ok: sec.c1 === 200,
+        genuineClick2Ok: sec.c2 === 200,
+        falsePositives: (sec.c1 === 200 ? 0 : 1) + (sec.c2 === 200 ? 0 : 1),
         attacks,
-        attacksBlocked: `${attacksBlockedCount}/6`,
+        attacksBlocked: `${blockedCount}/6`,
         statuses: {
-          click1: c1.resp.status,
-          click2: c2.resp.status,
-          crossOriginCsrf: csrfProbe.status,
-          exactReplay: replay.status,
-          bodyTamper: tamper.status,
-          interceptHold8s: interceptHold.status,
-          proxyStripped: proxyStripped.status,
-          uniqueBurstFloodBlocked: burstBlocked,
+          click1: sec.c1,
+          click2: sec.c2,
+          crossOriginCsrf: sec.csrf,
+          exactReplay: sec.replay,
+          bodyTamper: sec.tamper,
+          interceptHold8s: sec.hold8s,
+          proxyStripped: sec.proxy,
+          uniqueFlood: sec.uniqueFloodStatus,
         },
         perf: {
-          requests: N,
+          requests: latencies.length,
           warmupRequests: 100,
+          handshakeMs: sec.handshakeMs,
           medianMs: Number(percentile(latencies, 50).toFixed(3)),
           p95Ms: Number(percentile(latencies, 95).toFixed(3)),
-          reqPerSec: Math.round((N / totalMeasuredMs) * 1000),
+          reqPerSec: Math.round((latencies.length / totalMeasuredMs) * 1000),
         },
       };
       report.push(row);
       console.log(
         `${row.name.padEnd(32)} | FP=${row.falsePositives}/2 | Blocked=${row.attacksBlocked} | ` +
-        `CSRF=${csrfProbe.status} Replay=${replay.status} Tamper=${tamper.status} Hold8s=${interceptHold.status} Proxy=${proxyStripped.status} UniqueBurst=${burstBlocked ? "429" : "200"} | ` +
-        `med=${row.perf.medianMs}ms p95=${row.perf.p95Ms}ms (${row.perf.reqPerSec} req/s)`
+          `CSRF=${sec.csrf} Replay=${sec.replay} Tamper=${sec.tamper} Hold8s=${sec.hold8s} Proxy=${sec.proxy} UniqueFlood=${sec.uniqueFloodStatus} | ` +
+          `med=${row.perf.medianMs}ms p95=${row.perf.p95Ms}ms (${row.perf.reqPerSec} req/s)` +
+          (sec.handshakeMs !== null ? ` [hs+pow=${sec.handshakeMs}ms]` : "")
       );
     }
 
-    const outPath = path.join(__dirname, "results.json");
-    fs.writeFileSync(
-      outPath,
-      JSON.stringify(
-        {
-          version: "1.0.0",
-          timestamp: new Date().toISOString(),
-          nodeVersion: process.version,
-          methodology:
-            "Real local TCP/HTTP keep-alive sockets; 100 warmup + 300 measured sequential POSTs per defense (no client HMAC billed to non-HMAC baselines); 2 genuine browser requests + 6 live attack scenarios (Burst Flood uses 75 unique fresh requests, not nonce replays).",
-          results: report,
-        },
-        null,
-        2
-      ) + "\n"
-    );
-    console.log(`\nSaved ProxySnare benchmark results to ${outPath}`);
+    if (shouldWrite) {
+      fs.writeFileSync(
+        outPath,
+        JSON.stringify(
+          {
+            version: pkg.version,
+            timestamp: new Date().toISOString(),
+            nodeVersion: process.version,
+            methodology:
+              "Real local TCP/HTTP keep-alive sockets; 400-request global pre-warmup + 100 warmup + 300 measured sequential POSTs interleaved across 3 rounds per defense (no client HMAC billed to non-HMAC baselines; ProxySnare uses full PS_ECDH_V2 + PoW handshake); 2 genuine browser requests + 6 live attack scenarios (Unique Flood uses 75 unique fresh requests, not nonce replays).",
+            results: report,
+          },
+          null,
+          2
+        ) + "\n"
+      );
+      console.log(`\nSaved ProxySnare benchmark results to ${outPath}`);
+    }
   } finally {
     keepAliveAgent.destroy();
     for (const d of defs) await d.srv.close();

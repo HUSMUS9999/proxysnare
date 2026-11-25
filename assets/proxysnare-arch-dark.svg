@@ -46,8 +46,8 @@
 
     <text class="sans hub-title" x="164" y="52.5">ProxySnare — Proof-of-Freshness &amp; Rotating Honey-Canary</text>
 
-    <rect x="748" y="37.5" width="194" height="21" rx="5" fill="#0D2538" stroke="#25638A" stroke-width="0.9"/>
-    <text class="mono badge-txt" x="845" y="51.5">HMAC-SHA256 · ZERO DEPS</text>
+    <rect x="730" y="37.5" width="212" height="21" rx="5" fill="#0D2538" stroke="#25638A" stroke-width="0.9"/>
+    <text class="mono badge-txt" x="836" y="51.5">ECDH P-256 + HMAC · 0 DEPS</text>
   </g>
 
   <!-- UNOBSTRUCTED VERTICAL LIFELINES -->
@@ -82,18 +82,18 @@
   <!-- STEP 1: HANDSHAKE REQUEST (Browser -> Shield) -->
   <g id="ps-step1">
     <rect x="180" y="184" width="288" height="36" rx="7" fill="#151D29" stroke="#2D3B50" stroke-width="1.1"/>
-    <text class="mono card-cmd" x="324" y="206">POST /__proxysnare/handshake</text>
+    <text class="mono card-cmd" x="324" y="206">POST /handshake (P-256 + PoW)</text>
 
     <circle cx="158" cy="234" r="10" fill="#38BDF8"/>
     <text class="mono" x="158" y="237.5" font-size="10" font-weight="700" fill="#0D1117" text-anchor="middle">1</text>
     <line class="edge-acc" x1="170" y1="234" x2="480" y2="234" marker-end="url(#ps-acc-dark)"/>
   </g>
 
-  <!-- STEP 2: EPHEMERAL KEY + CANARY_0 (Shield -> Browser) -->
+  <!-- STEP 2: EPHEMERAL ECDH + CANARY_0 (Shield -> Browser) -->
   <g id="ps-step2">
     <rect x="180" y="252" width="288" height="44" rx="7" fill="#151D29" stroke="#2D3B50" stroke-width="1.1"/>
-    <text class="mono card-cmd" x="324" y="270">sessionId + sessionKey + canary_0</text>
-    <text class="sans muted-c" x="324" y="287">Stored in WebCrypto (extractable: false)</text>
+    <text class="mono card-cmd" x="324" y="270">serverPub + salt + canary_0</text>
+    <text class="sans muted-c" x="324" y="287">HKDF-SHA256 -&gt; WebCrypto (non-extractable)</text>
 
     <circle cx="490" cy="308" r="10" fill="#38BDF8"/>
     <text class="mono" x="490" y="311.5" font-size="10" font-weight="700" fill="#0D1117" text-anchor="middle">2</text>

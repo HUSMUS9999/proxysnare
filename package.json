@@ -1,7 +1,7 @@
 {
   "name": "proxysnare",
-  "version": "1.0.0",
-  "description": "Zero-dependency HTTP Repeater & Intercepting Proxy defense (Proof-of-Freshness HMAC-SHA256 + rotating honey-canary middleware, reverse proxy, browser guard, and Python stdlib verifier)",
+  "version": "2.0.0",
+  "description": "Zero-dependency HTTP Repeater & Intercepting Proxy defense (PS_ECDH_V2 ephemeral P-256 ECDH + HKDF-SHA256, boot-token PoW, Proof-of-Freshness HMAC-SHA256 + rotating honey-canary middleware, reverse proxy, browser guard, and Python stdlib verifier)",
   "main": "src/index.js",
   "types": "src/index.d.ts",
   "exports": {
@@ -9,16 +9,32 @@
       "types": "./src/index.d.ts",
       "default": "./src/index.js"
     },
-    "./detector": "./src/detector.js",
-    "./middleware": "./src/middleware.js",
-    "./browser-guard": "./src/browser-guard.js",
-    "./nl": "./src/nl.js",
+    "./detector": {
+      "types": "./src/detector.d.ts",
+      "default": "./src/detector.js"
+    },
+    "./middleware": {
+      "types": "./src/middleware.d.ts",
+      "default": "./src/middleware.js"
+    },
+    "./browser-guard": {
+      "types": "./src/browser-guard.d.ts",
+      "default": "./src/browser-guard.js"
+    },
+    "./nl": {
+      "types": "./src/nl.d.ts",
+      "default": "./src/nl.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "src/",
     "bin/",
     "python/",
+    "!python/__pycache__/**",
+    "!**/*.pyc",
+    "docs/",
+    "assets/",
     "LICENSE",
     "README.md"
   ],
@@ -48,6 +64,7 @@
     "repeater",
     "proxy-detection",
     "anti-replay",
+    "ecdh",
     "http-security",
     "middleware"
   ],

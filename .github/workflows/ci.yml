@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Node ${{ matrix.node }} + Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20", "22"]
+        python: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Run Node.js + Python parity test suite
+        run: npm test
+
+      - name: Verify CLI help and NL dry-run
+        run: |
+          node bin/proxysnare.js --help >/dev/null
+          node bin/proxysnare.js protect --help >/dev/null
+          node bin/proxysnare.js explain "block caido and burp repeater on http://localhost:3000 on port 8080" --json >/dev/null
+
+      - name: Verify TypeScript declarations (root + subpath exports)
+        run: |
+          npm install --no-save typescript @types/node
+          trap 'rm -f .ci_typecheck.mts' EXIT
+          cat <<'EOF' > .ci_typecheck.mts
+          import * as root from "./src/index.js";
+          import type { ProxySnareNaturalLanguagePlan } from "./src/nl.js";
+          import { createProxySnareEngine } from "./src/detector.js";
+          import { createProxySnareMiddleware, createProxySnareServer } from "./src/middleware.js";
+          import { buildBrowserGuardScript } from "./src/browser-guard.js";
+          const plan: ProxySnareNaturalLanguagePlan = root.compileNaturalLanguage("block repeater on http://localhost:3000");
+          const eng = createProxySnareEngine({ mode: "observe", trustProxy: ["10.0.0.0/8", "::1/128"] });
+          const mw = createProxySnareMiddleware({ mode: "strict", handshakePowBits: 12 });
+          const srv = createProxySnareServer({ target: "http://127.0.0.1:3000" });
+          const js: string = buildBrowserGuardScript({ protectedPaths: ["/api", /^\/v1/] });
+          void plan; void eng; void mw; void srv; void js;
+          EOF
+          npx tsc --noEmit --strict --module nodenext --moduleResolution nodenext --target es2022 .ci_typecheck.mts
+
+      - name: Verify npm tarball hygiene (no __pycache__ / .pyc leaks)
+        run: |
+          PACK_LIST=$(npm pack --dry-run 2>&1)
+          echo "$PACK_LIST"
+          if echo "$PACK_LIST" | grep -Eq '(\.pyc|__pycache__)'; then
+            echo "ERROR: Python bytecode leaked into npm tarball!"
+            exit 1
+          fi
