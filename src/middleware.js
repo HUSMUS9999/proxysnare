@@ -3,7 +3,7 @@
 const http = require("node:http");
 const https = require("node:https");
 const zlib = require("node:zlib");
-const { createProxySnareEngine, normalizePathname } = require("./detector.js");
+const { createProxySnareEngine, normalizePathname, stripSchemeAndAuthority } = require("./detector.js");
 const { buildBrowserGuardScript } = require("./browser-guard.js");
 
 const HOP_BY_HOP_HEADERS = new Set([
@@ -19,14 +19,29 @@ const HOP_BY_HOP_HEADERS = new Set([
   "upgrade",
 ]);
 
-function stripHopByHop(headers) {
+const PROTECTED_FROM_CONN_STRIP = new Set([
+  "host",
+  "authorization",
+  "cookie",
+  "forwarded",
+  "x-forwarded-for",
+  "x-forwarded-host",
+  "x-forwarded-proto",
+  "x-real-ip",
+  "cf-connecting-ip",
+  "true-client-ip",
+]);
+
+function stripHopByHop(headers, { isRequest = false } = {}) {
   const out = {};
   const connTokens = new Set();
   const connVal = headers?.connection;
-  if (typeof connVal === "string") {
+  if (!isRequest && typeof connVal === "string") {
     for (const tok of connVal.split(",")) {
       const t = tok.trim().toLowerCase();
-      if (t) connTokens.add(t);
+      if (t && !PROTECTED_FROM_CONN_STRIP.has(t) && !t.startsWith("x-auth-") && !t.startsWith("cf-")) {
+        connTokens.add(t);
+      }
     }
   }
   for (const [k, v] of Object.entries(headers || {})) {
@@ -42,7 +57,8 @@ function escapeHtmlAttr(s) {
 }
 
 function readRequestBody(req, maxBytes = 1024 * 1024) {
-  if (req.readableEnded || req.complete) {
+  // Check ONLY readableEnded (never req.complete, which llhttp sets while buffered bytes remain unread — HIGH-9)
+  if (req.readableEnded) {
     return Promise.resolve(Buffer.alloc(0));
   }
   return new Promise((resolve, reject) => {
@@ -153,25 +169,31 @@ function createProxySnareMiddleware(options = {}) {
         userAgent: req.headers["user-agent"] || "",
         origin: req.headers["origin"] || "",
       });
+      if (!sess) {
+        sendJson(res, 503, { ok: false, error: "SESSION_CAPACITY_EXCEEDED" });
+        return true;
+      }
       sendJson(res, 200, { ok: true, ...sess }, { "Vary": "Origin, User-Agent" });
       return true;
     }
 
-    const isProtected = engine.isPathProtected(pathname);
+    // Pass RAW urlStr so pre-hash and decoded-%3F/%23 bypasses are caught (Loop 3 CRIT-3 & HIGH-7)
+    const isProtected = engine.isPathProtected(urlStr);
     const hasPsHeader = Object.keys(req.headers || {}).some((k) => k.toLowerCase().startsWith("x-ps-"));
 
-    // Only buffer body on protected paths or when Proof-of-Freshness headers are present
-    // (never breaks large file uploads or streaming endpoints on unprotected routes).
+    // Only buffer body on protected paths or when Proof-of-Freshness headers are present.
+    // Guard req.body behind req._body & non-bodyless methods so Express 4's default req.body={} on GET never breaks signing (HIGH-9)!
+    const methodHasBody = req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS";
     let bodyBuf = Buffer.alloc(0);
     if (req.rawBody && Buffer.isBuffer(req.rawBody)) {
       bodyBuf = req.rawBody;
-    } else if (Buffer.isBuffer(req.body)) {
+    } else if (methodHasBody && Buffer.isBuffer(req.body)) {
       bodyBuf = req.body;
-    } else if (typeof req.body === "string") {
+    } else if (methodHasBody && typeof req.body === "string") {
       bodyBuf = Buffer.from(req.body, "utf8");
-    } else if (req.body && typeof req.body === "object") {
+    } else if (methodHasBody && req._body && req.body && typeof req.body === "object") {
       bodyBuf = Buffer.from(JSON.stringify(req.body), "utf8");
-    } else if ((isProtected || hasPsHeader) && req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS") {
+    } else if ((isProtected || hasPsHeader) && methodHasBody) {
       try {
         bodyBuf = await readRequestBody(req, options.maxBodyBytes || 1024 * 1024);
       } catch (e) {
@@ -251,19 +273,22 @@ function createProxySnareMiddleware(options = {}) {
   return handle;
 }
 
-function decodeHtmlBody(rawBuf, contentEncoding) {
+function decodeHtmlBody(rawBuf, contentEncoding, maxOutputLength = 5 * 1024 * 1024) {
   const enc = String(contentEncoding || "").trim().toLowerCase();
   if (!enc || enc === "identity") return rawBuf;
-  if (enc === "gzip") return zlib.gunzipSync(rawBuf);
-  if (enc === "deflate") return zlib.inflateSync(rawBuf);
-  if (enc === "br") return zlib.brotliDecompressSync(rawBuf);
+  const opts = { maxOutputLength };
+  if (enc === "gzip") return zlib.gunzipSync(rawBuf, opts);
+  if (enc === "deflate") return zlib.inflateSync(rawBuf, opts);
+  if (enc === "br") return zlib.brotliDecompressSync(rawBuf, opts);
   return null;
 }
 
 function injectGuardIntoHtml(html, basePath) {
   const safeSrc = escapeHtmlAttr(`${basePath}/guard.js`);
   const tag = `<script src="${safeSrc}"></script>`;
-  if (html.includes(`${basePath}/guard.js`)) return html;
+  if (new RegExp(`<script\\b[^>]*\\bsrc=["']${safeSrc.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["']`, "i").test(html)) {
+    return html;
+  }
   // Inject early in <head> (so guard instruments fetch/XHR before inline scripts run) or before </head>
   if (/<head(?:\s[^>]*)?>/i.test(html)) {
     return html.replace(/<head(?:\s[^>]*)?>/i, (m) => `${m}${tag}`);
@@ -275,6 +300,15 @@ function injectGuardIntoHtml(html, basePath) {
     return html.replace(/<body(?:\s[^>]*)?>/i, (m) => `${m}${tag}`);
   }
   return `${tag}${html}`;
+}
+
+function encodeForwardPathname(normPath) {
+  // Re-encode each segment to valid RFC 3986 ASCII so %20/UTF-8 never throw ERR_UNESCAPED_CHARACTERS
+  // and literal '?'/'#' never desync upstream query/fragment parsing (Loop 3 CRIT-3)
+  return normPath
+    .split("/")
+    .map((seg) => encodeURIComponent(seg))
+    .join("/");
 }
 
 /**
@@ -300,20 +334,22 @@ function createProxySnareServer(options = {}) {
       .then((handled) => {
         if (handled) return;
 
-        // Sanitize request-target so absolute-form URIs cannot abuse upstream as an open proxy
-        let fwdPath = req.url || "/";
-        if (/^https?:\/\//i.test(fwdPath)) {
-          try {
-            const parsed = new URL(fwdPath);
-            fwdPath = `${parsed.pathname}${parsed.search}`;
-          } catch {
-            fwdPath = "/";
-          }
+        // Reuse exact stripSchemeAndAuthority so `http://host?x=/api/secret` NEVER desyncs (Loop 4 CRIT-1)
+        // and encode only unescaped non-RFC3986 bytes in query so valid %20/%3A are NEVER double-encoded (Loop 4 HIGH-4)
+        let rawFwd = stripSchemeAndAuthority(req.url || "/");
+        let fwdSearch = "";
+        const qIdx = rawFwd.indexOf("?");
+        if (qIdx >= 0) {
+          fwdSearch = rawFwd.slice(qIdx);
+          rawFwd = rawFwd.slice(0, qIdx);
         }
-        if (!fwdPath.startsWith("/")) fwdPath = "/" + fwdPath;
+        const safeSearch = fwdSearch
+          ? fwdSearch.replace(/[^A-Za-z0-9\-._~!$&'()*+,;=:@/?%]|%(?![0-9a-fA-F]{2})/g, (ch) => encodeURIComponent(ch))
+          : "";
+        let fwdPath = `${encodeForwardPathname(normalizePathname(rawFwd))}${safeSearch}`;
         if (baseTargetPath) fwdPath = `${baseTargetPath}${fwdPath}`;
 
-        const fwdHeaders = stripHopByHop(req.headers);
+        const fwdHeaders = stripHopByHop(req.headers, { isRequest: true });
         fwdHeaders.host = targetUrl.host;
         const remoteIp = String(req.socket?.remoteAddress || "").replace(/^::ffff:/, "");
         if (remoteIp) {
@@ -391,7 +427,7 @@ function createProxySnareServer(options = {}) {
                 let decoded = rawBuf;
                 if (ce) {
                   try {
-                    const maybe = decodeHtmlBody(rawBuf, ce);
+                    const maybe = decodeHtmlBody(rawBuf, ce, maxHtmlBytes);
                     if (!maybe) {
                       res.writeHead(statusCode, outHeaders);
                       res.end(rawBuf);

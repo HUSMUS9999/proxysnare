@@ -3,14 +3,14 @@
 const crypto = require("node:crypto");
 const path = require("node:path");
 
-const VALID_MODES = new Set(["off", "monitor", "balanced", "strict"]);
+const VALID_MODES = new Set(["off", "monitor", "observe", "balanced", "strict"]);
 
 function normalizeMode(mode = "strict") {
-  const m = String(mode || "strict").trim().toLowerCase();
-  if (!VALID_MODES.has(m)) {
-    throw new Error(`Invalid ProxySnare mode '${mode}': expected 'off', 'monitor', 'balanced', or 'strict'`);
+  const raw = String(mode || "strict").trim().toLowerCase();
+  if (!VALID_MODES.has(raw)) {
+    throw new Error(`Invalid ProxySnare mode '${mode}': expected 'off', 'monitor', 'observe', 'balanced', or 'strict'`);
   }
-  return m;
+  return raw === "observe" ? "monitor" : raw;
 }
 
 function sha256Hex(input) {
@@ -51,37 +51,69 @@ function hasHeader(headers, name) {
  * Normalizes an HTTP request-target pathname to defeat case, percent-encoding,
  * absolute-form URI, double-slash, dot-segment, backslash, and matrix-param bypasses.
  */
-function normalizePathname(rawUrl) {
-  let s = String(rawUrl || "/").trim();
-  // Strip absolute-form scheme+authority (RFC 9112 §3.2.2)
-  if (/^https?:\/\//i.test(s)) {
-    try {
-      s = new URL(s).pathname || "/";
-    } catch {
-      const idx = s.indexOf("/", s.indexOf("://") + 3);
-      s = idx >= 0 ? s.slice(idx) : "/";
+function decodePercentLenient(s) {
+  // Decode valid ASCII/UTF-8 percent escapes without letting an invalid byte (e.g. %ff) poison adjacent runs (CRIT-2)
+  return s.replace(/(?:%[0-9a-fA-F]{2})+/g, (run) => {
+    let out = "";
+    let i = 0;
+    while (i < run.length) {
+      const b = parseInt(run.slice(i + 1, i + 3), 16);
+      if (b >= 0x01 && b <= 0x7f) {
+        out += String.fromCharCode(b);
+        i += 3;
+        continue;
+      }
+      let matched = false;
+      for (const n of [2, 3, 4]) {
+        if (i + n * 3 <= run.length) {
+          const sub = run.slice(i, i + n * 3);
+          try {
+            out += decodeURIComponent(sub);
+            i += n * 3;
+            matched = true;
+            break;
+          } catch {}
+        }
+      }
+      if (!matched) {
+        out += run.slice(i, i + 3);
+        i += 3;
+      }
     }
+    return out;
+  });
+}
+
+function stripSchemeAndAuthority(rawUrl) {
+  let s = String(rawUrl || "/").trim();
+  if (/^https?:\/\//i.test(s)) {
+    const afterScheme = s.indexOf("://") + 3;
+    const slashIdx = s.indexOf("/", afterScheme);
+    const qIdx = s.indexOf("?", afterScheme);
+    const hIdx = s.indexOf("#", afterScheme);
+    const cuts = [slashIdx, qIdx, hIdx].filter((i) => i >= 0);
+    if (cuts.length === 0) return "/";
+    const first = Math.min(...cuts);
+    s = s[first] === "/" ? s.slice(first) : "/" + s.slice(first);
   }
-  // Drop query and fragment
-  const qIdx = s.search(/[?#]/);
+  return s;
+}
+
+function normalizePathname(rawUrl) {
+  let s = stripSchemeAndAuthority(rawUrl);
+  // Drop query ONLY on raw '?' (preserve '#' so /x#/../api resolves to /api)
+  const qIdx = s.indexOf("?");
   if (qIdx >= 0) s = s.slice(0, qIdx);
   if (!s) return "/";
 
-  // Decode percent-encoding up to 2 passes safely (prevents %61pi / %2561pi bypass)
   for (let pass = 0; pass < 2; pass++) {
-    try {
-      const decoded = decodeURIComponent(s);
-      if (decoded === s) break;
-      s = decoded;
-    } catch {
-      break;
-    }
+    const decoded = decodePercentLenient(s);
+    if (decoded === s) break;
+    s = decoded;
   }
 
-  // Normalize Windows backslashes and collapse slashes / dot-segments
   s = s.replace(/\\/g, "/");
   if (!s.startsWith("/")) s = "/" + s;
-  // Strip matrix parameters per segment (e.g. /api;v=1/transfer -> /api/transfer)
   s = s
     .split("/")
     .map((seg) => seg.split(";")[0])
@@ -91,27 +123,62 @@ function normalizePathname(rawUrl) {
   return s;
 }
 
-function normalizeProtectedPaths(paths) {
-  if (!paths || paths.length === 0) return ["/api"];
-  return paths.map((p) => (p instanceof RegExp ? p : normalizePathname(String(p))));
+function expandPathCandidates(rawUrl) {
+  const raw = stripSchemeAndAuthority(rawUrl);
+  const qIdx = raw.indexOf("?");
+  const rawPath = qIdx >= 0 ? raw.slice(0, qIdx) : raw;
+  const set = new Set();
+  set.add(normalizePathname(rawPath));
+
+  // Raw '#' pre-hash check BEFORE dot-segment collapse (defeats /api#/../../public — Loop 3 HIGH-7)
+  const rawHash = rawPath.indexOf("#");
+  if (rawHash >= 0) {
+    set.add(normalizePathname(rawPath.slice(0, rawHash)));
+  }
+
+  // Decoded '?' and '#' splits (defeats /api%3F and /api%23/../../public — Loop 3 CRIT-3 & HIGH-7)
+  let dec = rawPath;
+  for (let pass = 0; pass < 2; pass++) {
+    const next = decodePercentLenient(dec);
+    if (next === dec) break;
+    dec = next;
+  }
+  const decQ = dec.indexOf("?");
+  if (decQ >= 0) set.add(normalizePathname(dec.slice(0, decQ)));
+  const decH = dec.indexOf("#");
+  if (decH >= 0) set.add(normalizePathname(dec.slice(0, decH)));
+
+  return Array.from(set);
 }
 
-function isPathProtected(rawPathname, protectedPaths) {
-  const norm = normalizePathname(rawPathname);
-  const normLower = norm.toLowerCase();
-  for (const rule of protectedPaths) {
-    if (rule instanceof RegExp) {
-      rule.lastIndex = 0;
-      if (rule.test(norm)) return true;
-    } else {
-      const rLower = String(rule).toLowerCase();
-      if (
-        rLower === "*" ||
-        rLower === "/" ||
-        normLower === rLower ||
-        normLower.startsWith(rLower.endsWith("/") ? rLower : `${rLower}/`)
-      ) {
-        return true;
+function normalizeProtectedPaths(paths) {
+  if (!paths || paths.length === 0) return ["/api"];
+  return paths.map((p) => {
+    if (p instanceof RegExp) return p;
+    const raw = String(p).trim();
+    if (raw === "*") return "*";
+    return normalizePathname(raw);
+  });
+}
+
+function isPathProtected(rawUrl, protectedPaths) {
+  const candidates = expandPathCandidates(rawUrl);
+  for (const norm of candidates) {
+    const normLower = norm.toLowerCase();
+    for (const rule of protectedPaths) {
+      if (rule instanceof RegExp) {
+        rule.lastIndex = 0;
+        if (rule.test(norm)) return true;
+      } else {
+        const rLower = String(rule).trim().toLowerCase();
+        if (
+          rLower === "*" ||
+          rLower === "/" ||
+          normLower === rLower ||
+          normLower.startsWith(rLower.endsWith("/") ? rLower : `${rLower}/`)
+        ) {
+          return true;
+        }
       }
     }
   }
@@ -119,27 +186,138 @@ function isPathProtected(rawPathname, protectedPaths) {
 }
 
 function normalizeIp(ip) {
-  const s = String(ip || "").trim().replace(/^::ffff:/, "");
+  const s = String(ip || "").trim().toLowerCase().replace(/^::ffff:/, "");
   return s === "::1" ? "127.0.0.1" : s;
 }
 
+function parseIpv4Int(ip) {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return null;
+  let n = 0;
+  for (const p of parts) {
+    if (!/^\d{1,3}$/.test(p)) return null;
+    const v = Number(p);
+    if (v < 0 || v > 255) return null;
+    n = (n << 8) | v;
+  }
+  return n >>> 0;
+}
+
+function parseIpv6BigInt(ip) {
+  let s = String(ip || "").trim().toLowerCase();
+  if (!s.includes(":")) return null;
+  // Support IPv4-mapped IPv6 trailing dotted-quad (e.g. ::ffff:10.0.0.1 — Loop 3 MED-21)
+  const lastColon = s.lastIndexOf(":");
+  if (lastColon >= 0 && s.slice(lastColon + 1).includes(".")) {
+    const v4 = parseIpv4Int(s.slice(lastColon + 1));
+    if (v4 === null) return null;
+    const hi = ((v4 >>> 16) & 0xffff).toString(16);
+    const lo = (v4 & 0xffff).toString(16);
+    s = `${s.slice(0, lastColon + 1)}${hi}:${lo}`;
+  }
+  const halves = s.split("::");
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(":") : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const missing = 8 - (left.length + right.length);
+  if (halves.length === 1 && missing !== 0) return null;
+  if (halves.length === 2 && missing < 0) return null;
+  const groups = [...left, ...Array(Math.max(0, missing)).fill("0"), ...right];
+  if (groups.length !== 8) return null;
+  let acc = 0n;
+  for (const g of groups) {
+    if (!/^[0-9a-f]{1,4}$/i.test(g)) return null;
+    acc = (acc << 16n) | BigInt(parseInt(g, 16));
+  }
+  return acc;
+}
+
+function compileTrustedProxies(spec) {
+  const rawList = Array.isArray(spec)
+    ? spec
+    : typeof spec === "string"
+      ? spec.split(",")
+      : [];
+  const exact = new Set();
+  const cidrsV4 = [];
+  const cidrsV6 = [];
+  for (const item of rawList) {
+    const entry = String(item || "").trim().toLowerCase();
+    if (!entry) continue;
+    const slash = entry.indexOf("/");
+    if (slash > 0) {
+      const baseRaw = entry.slice(0, slash);
+      const bitsStr = entry.slice(slash + 1);
+      // Require explicit digits so trailing slash "10.0.0.1/" NEVER compiles to /0! (Loop 3 HIGH-8)
+      if (!/^\d{1,3}$/.test(bitsStr)) continue;
+      const bits = Number(bitsStr);
+      // Parse IPv6 BEFORE normalizeIp so ::1/128, ::/64, ::ffff:10.0.0.0/104 match cleanly (Loop 3 MED-21)
+      const baseV6 = parseIpv6BigInt(baseRaw);
+      if (baseV6 !== null && bits >= 0 && bits <= 128) {
+        const mask = bits === 0 ? 0n : (((1n << BigInt(bits)) - 1n) << BigInt(128 - bits));
+        cidrsV6.push({ net: baseV6 & mask, mask });
+        continue;
+      }
+      const baseInt = parseIpv4Int(baseRaw);
+      if (baseInt !== null && bits >= 0 && bits <= 32) {
+        const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
+        cidrsV4.push({ net: (baseInt & mask) >>> 0, mask });
+        continue;
+      }
+      continue;
+    }
+    const rawV6 = parseIpv6BigInt(entry);
+    if (rawV6 !== null) exact.add(`v6:${rawV6.toString(16)}`);
+    exact.add(normalizeIp(entry));
+  }
+  return {
+    size: exact.size + cidrsV4.length + cidrsV6.length,
+    has(ip) {
+      const raw = String(ip || "").trim().toLowerCase();
+      const norm = normalizeIp(raw);
+      if (exact.has(norm)) return true;
+      const rawV6 = parseIpv6BigInt(raw);
+      if (rawV6 !== null) {
+        if (exact.has(`v6:${rawV6.toString(16)}`)) return true;
+        for (const c of cidrsV6) {
+          if ((rawV6 & c.mask) === c.net) return true;
+        }
+      }
+      const v4 = parseIpv4Int(norm);
+      if (v4 !== null) {
+        for (const c of cidrsV4) {
+          if (((v4 & c.mask) >>> 0) === c.net) return true;
+        }
+        // Also match IPv4 against IPv4-mapped IPv6 CIDRs (::ffff:a.b.c.d/104)
+        if (cidrsV6.length > 0) {
+          const mappedV6 = (0xffffn << 32n) | BigInt(v4);
+          for (const c of cidrsV6) {
+            if ((mappedV6 & c.mask) === c.net) return true;
+          }
+        }
+      }
+      return false;
+    },
+  };
+}
+
 function extractClientIp(req, trustedProxies) {
-  const remoteRaw = req?.socket?.remoteAddress || req?.ip || "";
-  const remote = normalizeIp(remoteRaw);
-  if (remote && trustedProxies.size > 0 && trustedProxies.has(remote)) {
+  const remoteRaw = String(req?.socket?.remoteAddress || req?.ip || "").trim();
+  // Pass RAW IP (preserving ::1 / ::ffff:...) to trustedProxies.has() before normalizing return value (Loop 4 MED-8)
+  if (remoteRaw && trustedProxies.size > 0 && trustedProxies.has(remoteRaw)) {
     const xff = getHeader(req.headers, "x-forwarded-for");
     if (xff) {
       // Walk right-to-left skipping trusted proxies (defeats leftmost XFF spoofing!)
-      const parts = xff.split(",").map((s) => normalizeIp(s)).filter(Boolean);
-      for (let i = parts.length - 1; i >= 0; i--) {
-        if (!trustedProxies.has(parts[i])) {
-          return parts[i];
+      const rawParts = xff.split(",").map((s) => s.trim()).filter(Boolean);
+      for (let i = rawParts.length - 1; i >= 0; i--) {
+        if (!trustedProxies.has(rawParts[i])) {
+          return normalizeIp(rawParts[i]);
         }
       }
-      if (parts.length > 0) return parts[0];
+      if (rawParts.length > 0) return normalizeIp(rawParts[0]);
     }
   }
-  return remote || "unknown";
+  return normalizeIp(remoteRaw) || "unknown";
 }
 
 function parseBrowserMajorChrome(ua) {
@@ -193,14 +371,7 @@ function createProxySnareEngine(options = {}) {
   const maxNonces = positiveFinite(options.maxNonces, 50_000, "maxNonces");
   const maxHandshakesPerMin = positiveFinite(options.maxHandshakesPerMin, 120, "maxHandshakesPerMin");
   const protectedPaths = normalizeProtectedPaths(options.protectedPaths);
-  const trustedProxies = new Set(
-    (Array.isArray(options.trustProxy)
-      ? options.trustProxy.map((s) => normalizeIp(s))
-      : typeof options.trustProxy === "string"
-        ? options.trustProxy.split(",").map((s) => normalizeIp(s))
-        : []
-    ).filter(Boolean)
-  );
+  const trustedProxies = compileTrustedProxies(options.trustProxy);
   const onDetect = typeof options.onDetect === "function" ? options.onDetect : null;
 
   const sessions = new Map();
@@ -211,17 +382,8 @@ function createProxySnareEngine(options = {}) {
 
   function pruneMaps(now) {
     if (sessions.size > maxSessions) {
-      // First pass: delete expired sessions
       for (const [k, v] of sessions) {
         if (v.exp <= now) sessions.delete(k);
-      }
-      // Second pass if still over cap: evict oldest 15%
-      if (sessions.size > maxSessions) {
-        const target = Math.floor(maxSessions * 0.85);
-        for (const k of sessions.keys()) {
-          sessions.delete(k);
-          if (sessions.size <= target) break;
-        }
       }
     }
     if (usedNonces.size > maxNonces) {
@@ -236,13 +398,45 @@ function createProxySnareEngine(options = {}) {
         }
       }
     }
-    if (ipBursts.size > 10_000) ipBursts.clear();
-    if (handshakeRates.size > 10_000) handshakeRates.clear();
+    // Bounded expired-first LRU cleanup — never call `.clear()` wiping active rate buckets (MED-08)
+    if (ipBursts.size > 10_000) {
+      for (const [k, arr] of ipBursts) {
+        const fresh = arr.filter((e) => now - e.ts <= 5_000);
+        if (fresh.length === 0) ipBursts.delete(k);
+      }
+      if (ipBursts.size > 10_000) {
+        const drop = ipBursts.size - 8_500;
+        let i = 0;
+        for (const k of ipBursts.keys()) {
+          ipBursts.delete(k);
+          if (++i >= drop) break;
+        }
+      }
+    }
+    if (handshakeRates.size > 10_000) {
+      for (const [k, arr] of handshakeRates) {
+        const fresh = arr.filter((t) => now - t < 60_000);
+        if (fresh.length === 0) handshakeRates.delete(k);
+      }
+      if (handshakeRates.size > 10_000) {
+        const drop = handshakeRates.size - 8_500;
+        let i = 0;
+        for (const k of handshakeRates.keys()) {
+          handshakeRates.delete(k);
+          if (++i >= drop) break;
+        }
+      }
+    }
   }
 
   function allowHandshake(ip, now = Date.now()) {
+    if (handshakeRates.size >= 10_000) {
+      pruneMaps(now);
+    }
     const key = ip || "unknown";
     const arr = (handshakeRates.get(key) || []).filter((t) => now - t < 60_000);
+    // Refresh Map order (delete + set) for true LRU so actively rate-limited IPs are NEVER evicted first (MED-20)
+    handshakeRates.delete(key);
     if (arr.length >= maxHandshakesPerMin) {
       handshakeRates.set(key, arr);
       return false;
@@ -265,6 +459,14 @@ function createProxySnareEngine(options = {}) {
   function issueSession({ ip = "127.0.0.1", userAgent = "", origin = "" } = {}) {
     const now = Date.now();
     pruneMaps(now);
+    if (sessions.size >= maxSessions) {
+      for (const [k, v] of sessions) {
+        if (v.exp <= now) sessions.delete(k);
+      }
+      if (sessions.size >= maxSessions) {
+        return null;
+      }
+    }
     const sessionId = crypto.randomBytes(16).toString("hex");
     const keyBuf = crypto.randomBytes(32);
     const keyHex = keyBuf.toString("hex");
@@ -343,12 +545,9 @@ function createProxySnareEngine(options = {}) {
       return { ok: true, blocked: false, score: 0, threshold, mode, reasons: [], nextCanary: null };
     }
 
-    const isProtected = isPathProtected(pathname, protectedPaths);
-
-    // Allow CORS preflight OPTIONS without Proof-of-Freshness (browsers cannot attach custom X-PS-* on preflight)
-    if (upperMethod === "OPTIONS" && hasHeader(headers, "access-control-request-method")) {
-      return { ok: true, blocked: false, score: 0, threshold, mode, reasons: [], nextCanary: null };
-    }
+    // Pass RAW pathWithQuery so pre-hash & decoded-%3F/%23 candidates cannot be defeated by dot collapse (HIGH-7)
+    const isProtected = isPathProtected(pathWithQuery, protectedPaths);
+    const isCorsPreflight = upperMethod === "OPTIONS" && hasHeader(headers, "access-control-request-method");
 
     const ua = getHeader(headers, "user-agent");
     const conn = getHeader(headers, "connection").toLowerCase();
@@ -359,7 +558,7 @@ function createProxySnareEngine(options = {}) {
     const secChPlatform = getHeader(headers, "sec-ch-ua-platform").replace(/"/g, "").toLowerCase();
     const originHdr = getHeader(headers, "origin").trim().toLowerCase();
 
-    // --- Signal 1: Explicit Proxy Leakage & HTTP Request Smuggling ---
+    // --- Signal 1: Explicit Proxy Leakage & HTTP Request Smuggling (always runs even on OPTIONS — MED-23!) ---
     if (cl && te) {
       flag("CL_TE_SMUGGLING", 10, "Both Content-Length and Transfer-Encoding present (RFC 9112 §6.3)");
     }
@@ -383,6 +582,12 @@ function createProxySnareEngine(options = {}) {
       if (hostCount > 1) {
         flag("DUPLICATE_HOST_HEADER", 8, `Duplicate Host headers (${hostCount}) detected`);
       }
+    }
+
+    // Allow clean CORS preflight OPTIONS without Proof-of-Freshness AFTER Signal 1 smuggling checks!
+    if (isCorsPreflight) {
+      const blocked = mode !== "monitor" && score >= threshold;
+      return { ok: !blocked, blocked, score, threshold, mode, reasons, nextCanary: null };
     }
 
     // --- Signal 2: Browser UA vs. Repeater Wire/Metadata Contradictions ---
@@ -442,8 +647,17 @@ function createProxySnareEngine(options = {}) {
             "Missing ProxySnare single-use Proof-of-Freshness headers on protected route"
           );
         }
-      } else if (psNonce.length > 128 || psSid.length > 64 || psProof.length > 128) {
-        flag("REPEATER_BODY_OR_PATH_TAMPERED", 10, "Malformed Proof-of-Freshness header length");
+      } else if (
+        !/^[A-Za-z0-9_-]{8,64}$/.test(psNonce) ||
+        !/^[a-fA-F0-9]{16,64}$/.test(psSid) ||
+        !/^[a-fA-F0-9]{64}$/.test(psProof) ||
+        !/^[a-fA-F0-9]{16,64}$/.test(psCanary) ||
+        psSeqRaw.includes("|") ||
+        psTsRaw.includes("|") ||
+        upperMethod.includes("|")
+      ) {
+        // Strict delimiter-free validation eliminates HMAC `|` canonicalization injection (HIGH-07)
+        flag("REPEATER_BODY_OR_PATH_TAMPERED", 10, "Malformed Proof-of-Freshness header syntax");
       } else {
         const sess = sessions.get(psSid);
         if (!sess || sess.exp <= now) {
@@ -509,7 +723,13 @@ function createProxySnareEngine(options = {}) {
           if (proofValid) {
             usedNonces.set(nonceKey, now + nonceTtlMs);
           }
-          if (score < threshold) {
+          // MED-09 fix: require valid proof/seq/canary BEFORE advancing sequence in ALL modes!
+          const validAdvance =
+            proofValid &&
+            Number.isSafeInteger(seq) &&
+            seq > sess.lastSeq &&
+            safeEqualHex(psCanary, sess.canary);
+          if (validAdvance && (score < threshold || mode === "monitor")) {
             sess.lastSeq = seq;
             sess.canary = mintCanary(sess.sessionId, seq);
             nextCanary = sess.canary;
@@ -524,6 +744,7 @@ function createProxySnareEngine(options = {}) {
       const arr = (ipBursts.get(ip) || []).filter((e) => now - e.ts <= 5_000);
       const sameCount = arr.filter((e) => e.sig === sig).length;
       arr.push({ ts: now, sig });
+      ipBursts.delete(ip);
       ipBursts.set(ip, arr.slice(-30));
       if (sameCount >= 3) {
         flag("REPEATER_BURST_REPLAY", 5, `Identical unsigned payload replayed ${sameCount + 1}x in 5s`);
@@ -570,6 +791,7 @@ module.exports = {
   createProxySnareEngine,
   normalizeMode,
   normalizePathname,
+  stripSchemeAndAuthority,
   sha256Hex,
   hmacSha256Hex,
 };

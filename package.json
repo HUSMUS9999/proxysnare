@@ -3,12 +3,22 @@
   "version": "1.0.0",
   "description": "Zero-dependency HTTP Repeater & Intercepting Proxy defense (Proof-of-Freshness HMAC-SHA256 + rotating honey-canary middleware, reverse proxy, browser guard, and Python stdlib verifier)",
   "main": "src/index.js",
+  "types": "src/index.d.ts",
   "exports": {
-    ".": "./src/index.js"
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./detector": "./src/detector.js",
+    "./middleware": "./src/middleware.js",
+    "./browser-guard": "./src/browser-guard.js",
+    "./nl": "./src/nl.js",
+    "./package.json": "./package.json"
   },
   "files": [
     "src/",
     "bin/",
+    "python/",
     "LICENSE",
     "README.md"
   ],

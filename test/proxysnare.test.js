@@ -457,3 +457,207 @@ print(p + "|" + s["sessionKeyHex"] + "|" + str(ts) + "|" + s["canary"])`,
   });
   assert.equal(nodeProof, pyProof);
 });
+
+test("7. v2 CIDR trustProxy, observe alias monitor canary rotation, and modular subpath exports", () => {
+  const { createProxySnareEngine } = require("../src/detector.js");
+  const engine = createProxySnareEngine({
+    mode: "observe",
+    trustProxy: ["10.0.0.0/8", "172.16.0.0/12"],
+    protectedPaths: ["/api"],
+  });
+  assert.equal(engine.mode, "monitor");
+
+  // CIDR right-to-left XFF extraction ignores spoofed leftmost IP while stripping trusted ALB/proxy hops
+  const realIp = engine.extractClientIp({
+    socket: { remoteAddress: "::ffff:10.24.5.9" },
+    headers: { "x-forwarded-for": "1.2.3.4, 203.0.113.77, 172.20.1.5" },
+  });
+  assert.equal(realIp, "203.0.113.77");
+
+  // Monitor mode still advances seq & rotates canary when HMAC proof is valid despite a heuristic hit
+  const sess = engine.issueSession({
+    ip: "203.0.113.77",
+    userAgent: "Mozilla/5.0 Chrome/130.0.0.0",
+  });
+  const ts = String(Date.now());
+  const nonce = "nonce-observe-1";
+  const proof = engine.signRequest({
+    sessionKeyHex: sess.sessionKeyHex,
+    method: "POST",
+    pathWithQuery: "/api/order",
+    body: '{"item":1}',
+    seq: "1",
+    ts,
+    nonce,
+    canary: sess.canary,
+  });
+  const v = engine.inspectRequest({
+    method: "POST",
+    url: "/api/order",
+    body: '{"item":1}',
+    headers: {
+      "user-agent": "Mozilla/5.0 Chrome/130.0.0.0",
+      // Missing Sec-Fetch-* trips heuristic score=4 >= threshold, yet monitor mode should rotate canary!
+      "x-ps-session": sess.sessionId,
+      "x-ps-seq": "1",
+      "x-ps-ts": ts,
+      "x-ps-nonce": nonce,
+      "x-ps-canary": sess.canary,
+      "x-ps-proof": proof,
+    },
+  });
+  assert.equal(v.blocked, false);
+  assert.ok(v.nextCanary && v.nextCanary !== sess.canary, "monitor mode must rotate valid canary");
+
+  const pkg = require("../package.json");
+  assert.equal(pkg.exports["./detector"], "./src/detector.js");
+  assert.equal(pkg.exports["./middleware"], "./src/middleware.js");
+  assert.equal(pkg.exports["."].types, "./src/index.d.ts");
+  assert.ok(pkg.files.includes("python/"));
+});
+
+test("8. Loop 2 security regressions: ['*'] wildcard, '|' injection, #/%ff bypasses, IPv6 CIDR, Connection strip, capacity 503", async () => {
+  // CRIT-06: protectedPaths: ["*"] must protect arbitrary paths!
+  const starEngine = createProxySnareEngine({ mode: "strict", protectedPaths: ["*"] });
+  assert.equal(starEngine.isPathProtected("/anything/here"), true);
+  assert.equal(starEngine.isPathProtected("/"), true);
+
+  // CRIT-06 + Loop 3 CRIT-2/3/HIGH-7: %ff-poisoned runs, %3F query smuggling, pre-hash traversal, absolute-form #
+  const apiEngine = createProxySnareEngine({ mode: "strict", protectedPaths: ["/api"] });
+  for (const bypass of [
+    "/%61pi/%ff/secret",
+    "/%ff%2f../api/secret",
+    "/%61%70%69%3b%ff",
+    "/api%3F",
+    "/api%3Ffoo=1",
+    "/api#public",
+    "/api#/../../public",
+    "/api%23/../../public",
+    "/x#/../api/secret",
+    "http://example.com/public#/../../api/secret",
+  ]) {
+    assert.equal(apiEngine.isPathProtected(bypass), true, `Must protect bypass path: ${bypass}`);
+  }
+
+  // Loop 3 HIGH-8 & MED-21 + Loop 4 MED-8: trailing-slash CIDR must NOT match arbitrary IPs; ::1/128 works in extractClientIp!
+  const badCidrEngine = createProxySnareEngine({ mode: "strict", trustProxy: ["10.0.0.1/", "::1/128"] });
+  assert.equal(badCidrEngine.trustedProxies.has("203.0.113.99"), false);
+  assert.equal(badCidrEngine.trustedProxies.has("::1"), true);
+  assert.equal(
+    badCidrEngine.extractClientIp({ socket: { remoteAddress: "::1" }, headers: { "x-forwarded-for": "203.0.113.42" } }),
+    "203.0.113.42"
+  );
+
+  // Loop 3 CRIT-4, CRIT-5, HIGH-6 Python verifier regressions
+  const pyReg = execFileSync(
+    "python3",
+    [
+      "-c",
+      `import sys; sys.path.insert(0, ${JSON.stringify(path.resolve(__dirname, "../python"))});
+from proxysnare import ProxySnareVerifier
+v = ProxySnareVerifier(mode="observe")
+assert v.mode == "monitor"
+v_strict = ProxySnareVerifier(mode="strict", protected_paths=["/api"])
+for p in ("//api/transfer", "/%ff%2f../api/secret", "/api%3F", "/api#/../../public", "/public#/../../api"):
+    assert v_strict.inspect_request(method="POST", url=p, headers={}, body=b"{}").blocked, f"missed {p}"
+v_star = ProxySnareVerifier(mode="strict", protected_paths=["*"])
+assert v_star.inspect_request(method="POST", url="/admin/delete", headers={}).blocked
+s = v_strict.issue_session(user_agent="Mozilla/5.0 Chrome/158.0")
+assert "protectedRules" in s
+r_inj = v_strict.inspect_request(method="POST", url="/api/delete", headers={
+    "User-Agent": "Mozilla/5.0 Chrome/158.0", "Sec-Fetch-Site": "same-origin",
+    "X-PS-Session": s["sessionId"], "X-PS-Seq": "1", "X-PS-Ts": "1",
+    "X-PS-Nonce": "n1|evil", "X-PS-Canary": s["canary"], "X-PS-Proof": "a"*64
+}, body=b"{}")
+assert r_inj.blocked and any(x["code"]=="REPEATER_BODY_OR_PATH_TAMPERED" for x in r_inj.reasons)
+print("PY_L3_OK")`,
+    ],
+    { encoding: "utf8" }
+  ).trim();
+  assert.equal(pyReg, "PY_L3_OK");
+
+  // HIGH-07: HMAC delimiter '|' injection in X-PS-* headers must be rejected immediately
+  const sess = apiEngine.issueSession({ ip: "127.0.0.1", userAgent: CHROME_UA });
+  const rInj = apiEngine.inspectRequest({
+    method: "POST",
+    url: "/api/pay",
+    body: "{}",
+    headers: makeBrowserHeaders({
+      "x-ps-session": sess.sessionId,
+      "x-ps-seq": "1",
+      "x-ps-ts": String(Date.now()),
+      "x-ps-nonce": "abc|def12345",
+      "x-ps-canary": sess.canary,
+      "x-ps-proof": "a".repeat(64),
+    }),
+  });
+  assert.equal(rInj.blocked, true);
+  assert.ok(rInj.reasons.some((x) => x.code === "REPEATER_BODY_OR_PATH_TAMPERED"));
+
+  // MED-08: IPv6 CIDR trustProxy
+  const v6Engine = createProxySnareEngine({
+    mode: "strict",
+    trustProxy: ["2001:db8:abcd::/48"],
+    protectedPaths: ["/api"],
+  });
+  const realClient = v6Engine.extractClientIp({
+    socket: { remoteAddress: "2001:db8:abcd:0012::5" },
+    headers: { "x-forwarded-for": "198.51.100.55, 2001:db8:abcd::9" },
+  });
+  assert.equal(realClient, "198.51.100.55");
+
+  // MED-08: Live session capacity returns null instead of evicting active users
+  const capEngine = createProxySnareEngine({ mode: "strict", maxSessions: 2 });
+  assert.ok(capEngine.issueSession({ ip: "127.0.0.1" }));
+  assert.ok(capEngine.issueSession({ ip: "127.0.0.2" }));
+  assert.equal(capEngine.issueSession({ ip: "127.0.0.3" }), null);
+
+  // HIGH-10 + Loop 4 CRIT-1 & HIGH-4: Connection strip, absolute-form ? before /, and query %20 preservation
+  let seenAuth = null;
+  let seenXff = null;
+  let seenUrl = null;
+  const backend = http.createServer((req, res) => {
+    seenAuth = req.headers.authorization || null;
+    seenXff = req.headers["x-forwarded-for"] || null;
+    seenUrl = req.url;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end('{"ok":true}');
+  });
+  await new Promise((r) => backend.listen(0, "127.0.0.1", r));
+  const shield = createProxySnareServer({
+    target: `http://127.0.0.1:${backend.address().port}`,
+    mode: "strict",
+    protectedPaths: ["/api"],
+  });
+  const baseUrl = await shield.listen(0, "127.0.0.1");
+  try {
+    // Loop 3 CRIT-3 + Loop 4 HIGH-4: valid %20 in path & query preserved without 500 or %2520 double-encoding!
+    const spaceRes = await fetch(`${baseUrl}/public/my%20doc.pdf?q=hello%20world`, { headers: { "User-Agent": CHROME_UA } });
+    assert.equal(spaceRes.status, 200);
+    assert.equal(seenUrl, "/public/my%20doc.pdf?q=hello%20world");
+    // Loop 4 CRIT-1: raw absolute-form `GET http://example.com?x=/api/secret` must NOT forward `/api/secret`!
+    const rawAbs = await new Promise((resolve, reject) => {
+      const req = http.request(
+        { host: "127.0.0.1", port: shield.server.address().port, method: "GET", path: "http://example.com?x=/api/secret", headers: { "User-Agent": CHROME_UA } },
+        (r) => { r.resume(); r.on("end", () => resolve(r.statusCode)); }
+      );
+      req.on("error", reject);
+      req.end();
+    });
+    assert.equal(rawAbs, 200);
+    assert.equal(seenUrl, "/?x=/api/secret");
+    const res = await fetch(`${baseUrl}/public`, {
+      headers: {
+        "User-Agent": CHROME_UA,
+        Authorization: "Bearer keep-me",
+        Connection: "keep-alive, authorization, x-forwarded-for",
+      },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(seenAuth, "Bearer keep-me");
+    assert.ok(seenXff && seenXff.includes("127.0.0.1"));
+  } finally {
+    await shield.close();
+    await new Promise((r) => backend.close(r));
+  }
+});
