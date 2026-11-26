@@ -10,6 +10,9 @@ jobs:
   test:
     name: Node ${{ matrix.node }} + Python ${{ matrix.python }}
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: proxysnare
     strategy:
       fail-fast: false
       matrix:
@@ -18,6 +21,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: proxysnare
+
+      - name: Checkout sibling veilbreak for unified shield integration tests
+        uses: actions/checkout@v4
+        with:
+          repository: HusX99/veilbreak
+          path: veilbreak
+
+      - name: Checkout sibling veilbreak repo for unified integration tests
+        run: |
+          rm -rf ../veilbreak
+          git clone --depth 1 https://github.com/HusX99/veilbreak.git ../veilbreak
 
       - uses: actions/setup-node@v4
         with:
@@ -46,14 +62,19 @@ jobs:
           import { createProxySnareEngine } from "./src/detector.js";
           import { createProxySnareMiddleware, createProxySnareServer } from "./src/middleware.js";
           import { buildBrowserGuardScript } from "./src/browser-guard.js";
+          import { resolvePreset } from "./src/presets.js";
+          import { createUnifiedMiddleware, createUnifiedShield } from "./src/unified.js";
           const plan: ProxySnareNaturalLanguagePlan = root.compileNaturalLanguage("block repeater on http://localhost:3000");
+          const preset = resolvePreset("balanced");
           const eng = createProxySnareEngine({ mode: "observe", trustProxy: ["10.0.0.0/8", "::1/128"] });
           const mw = createProxySnareMiddleware({ mode: "strict", handshakePowBits: 12 });
           const srv = createProxySnareServer({ target: "http://127.0.0.1:3000" });
+          const uniMw = createUnifiedMiddleware({ mode: "balanced" });
+          const uniSrv = createUnifiedShield({ target: "http://127.0.0.1:3000", mode: "strict" });
           const js: string = buildBrowserGuardScript({ protectedPaths: ["/api", /^\/v1/] });
-          void plan; void eng; void mw; void srv; void js;
+          void plan; void preset; void eng; void mw; void srv; void uniMw; void uniSrv; void js;
           EOF
-          npx tsc --noEmit --strict --module nodenext --moduleResolution nodenext --target es2022 .ci_typecheck.mts
+          npx tsc --noEmit --strict --module nodenext --moduleResolution nodenext --target es2022 --types node .ci_typecheck.mts
 
       - name: Verify npm tarball hygiene (no __pycache__ / .pyc leaks)
         run: |

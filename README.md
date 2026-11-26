@@ -9,7 +9,7 @@
 <h1 align="center">ProxySnare</h1>
 
 <p align="center">
-  <a href="https://github.com/HUSMUS9999/proxysnare"><img src="assets/badges/version.svg" alt="version: 2.0.0" /></a>
+  <a href="https://github.com/HUSMUS9999/proxysnare"><img src="assets/badges/version.svg" alt="version: 2.1.0" /></a>
   <a href="#architecture"><img src="assets/badges/protocol.svg" alt="protocol: ECDH P-256 + HMAC" /></a>
   <a href="#features"><img src="assets/badges/defense.svg" alt="defense: rotating canary" /></a>
   <a href="#quickstart"><img src="assets/badges/deps.svg" alt="deps: 0" /></a>
@@ -20,25 +20,25 @@
   <a href="#quickstart">Quickstart</a> &middot;
   <a href="#benchmarks">Benchmarks</a> &middot;
   <a href="#architecture">Architecture</a> &middot;
-  <a href="#modes--honest-boundaries">Threat Model</a> &middot;
+  <a href="#modes--honest-boundaries">Presets &amp; Threat Model</a> &middot;
   <a href="#documentation--ecosystem">Docs</a>
 </p>
 
-**ProxySnare** is a zero-dependency reverse-proxy shield, Express/Node.js middleware, drop-in browser guard, and pure-stdlib Python verifier for defending browser-driven web APIs against `curl`, HTTP repeaters (Caido, Burp Suite), intercepting proxy replays, and request tampering.
+**ProxySnare** is a zero-dependency reverse-proxy shield, Express/Node.js middleware, drop-in browser guard, unified **ProxySnare + VeilBreak** shield, and pure-stdlib Python verifier for defending browser-driven web APIs against `curl`, HTTP repeaters (Caido, Burp Suite), intercepting proxy replays, DevTools Console `fetch()` tampering, Firecrawl/AI scrapers, and automated browsers.
 
 ## Problem & Solution
 
-**Problem:** Intercepting HTTP proxies and request repeaters (Caido Repeater, Burp Suite Repeater, mitmproxy) capture a legitimate browser request — preserving its exact session `Cookie`, `Authorization`, `Origin`, `Sec-Fetch-*`, and CSRF token — then pause, edit JSON fields, and replay it at human pace. Standard CSRF guards, Fetch Metadata checks, and rate limiters cannot distinguish those replays from genuine browser clicks.
+**Problem:** Intercepting HTTP proxies and request repeaters (Caido Repeater, Burp Suite Repeater, mitmproxy) capture a legitimate browser request — preserving its exact session `Cookie`, `Authorization`, `Origin`, `Sec-Fetch-*`, and CSRF token — then pause, edit JSON fields, and replay it at human pace. Sophisticated attackers also open DevTools Console to invoke `fetch()` directly inside the page, use Match & Replace to tamper with client guard scripts, attempt active ECDH MITM substitution, or run Firecrawl/headless browser scrapers.
 
-**Solution:** ProxySnare injects a drop-in guard (`/__proxysnare/guard.js`) that completes an ephemeral **`PS_ECDH_V2` NIST P-256 ECDH + HKDF-SHA256** handshake gated by a single-use `(ip, ua)`-bound boot token and SHA-256 Proof-of-Work (`PS_POW_V2`). The derived session key never crosses HTTP in plaintext and is created directly as a non-extractable WebCrypto `CryptoKey` (`extractable: false`). Every protected `fetch()` and async `XMLHttpRequest` is serialized per tab and signed with a single-use `HMAC-SHA256` Proof-of-Freshness bound to the exact method, path+query, body SHA-256, monotonic sequence number, freshness window, and server-rotated honey-canary (`X-PS-Next-Canary`). Out-of-the-box `curl` requests, Repeater replays, body edits, and intercept holds fail with `403`.
+**Solution:** ProxySnare injects a static SRI-pinned guard (`/__proxysnare/guard.js?v=<hash12>`, `integrity="sha384-..."`) that completes an **ECDSA P-256 authenticated `PS_ECDH_V2` + `PS_HS_AUTH_V1` handshake** bound to a single-use `(ip, ua)`-bound boot token, SHA-256 Proof-of-Work (`PS_POW_V2`), runtime `guardHash`, active CDP state, and (in unified mode) a challenge-bound **VeilBreak `VB_HS_V3`** real-browser integrity proof. The derived HMAC session key never crosses HTTP in plaintext and stays non-extractable inside captured native WebCrypto primitives. Every protected `fetch()` and async `XMLHttpRequest` is signed with a single-use `PS2|` `HMAC-SHA256` Proof-of-Freshness binding method, path+query, body SHA-256, monotonic sequence, freshness window, rotated honey-canary (`X-PS-Next-Canary`), and signed runtime provenance (`X-PS-Ctx`). Five adjustable presets (`off`, `monitor`/`observe`, `balanced`, `strict`, `paranoid`) let every team dial the exact availability-vs-security balance they need.
 
 ## Features
 
-- **Ephemeral `PS_ECDH_V2` Handshake + Boot PoW (`PS_POW_V2`)**: Browser WebCrypto generates an ephemeral P-256 keypair, solves a lightweight SHA-256 PoW (`12`-bit strict / `10`-bit balanced) against a single-use `(ip, uaHash)`-bound boot token, and derives the `HMAC-SHA256` signing key via `HKDF-SHA256` directly into a non-extractable `CryptoKey` — zero plaintext `sessionKeyHex` over HTTP, with byte-for-byte pure-stdlib P-256 parity in `python/proxysnare.py`.
-- **Single-Use Proof-of-Freshness (`PS1|`)**: Drop-in `/__proxysnare/guard.js` transparently wraps `fetch()` and async `XMLHttpRequest` (supporting concurrent `Promise.all` queues, same-origin `GET`/`HEAD` redirects, `abort()` recovery, `FormData`, `Blob`, `URL`, `Request`, and automatic `X-PS-Rehandshake: 1` recovery) to sign `(method, path+query, SHA-256(body), seq, ts, nonce, canary)`.
-- **Rotating Honey-Canary (`X-PS-Next-Canary`) & Freshness Window**: Every verified response rotates a per-session canary token; holding a captured request past `freshnessMs` (`8s` strict / `15s` balanced) triggers `INTERCEPT_HOLD_OR_STALE_REPLAY`.
-- **Hardened Path Normalization & Wire Scoring**: Expands percent-encoded (`/%61pi`, `/%ff`), double-slash (`//api`), dot-segment (`/api/%2e%2e/secret`), null-byte (`%00`), trailing dot/space (`/api./`, `/api%20/`), fragment, matrix-param, backslash, and absolute-form URIs before matching `protectedPaths`; blocks `CL+TE` smuggling, duplicate `Host`/`Content-Length`, `X-Original-URL`/`X-Rewrite-URL` overrides, cross-site Fetch Metadata, non-CORS `OPTIONS` probing, and CLI/proxy UAs.
-- **Modular Subpath Exports, Bundled `.d.ts`, & Natural-Language CLI**: Import `proxysnare/detector`, `proxysnare/middleware`, `proxysnare/browser-guard`, or `proxysnare/nl` with TypeScript declarations, wrap any upstream app with zero code changes (including gzip/deflate/brotli HTML injection and IPv4/IPv6 CIDR `--trust-proxy`), or use the thread-safe pure-stdlib Python verifier (`python/proxysnare.py`).
+- **ECDSA-Authenticated `PS_ECDH_V2` + `PS_HS_AUTH_V1` + `hsBind`**: Browser WebCrypto verifies the server's deterministic ECDSA P-256 handshake signature (pinned inside SRI-protected `guard.js`) covering `(sessionId, clientPub, serverPub, salt, bootToken, serverNowMs, canary, hsBind)` BEFORE deriving the non-extractable `HMAC-SHA256` key via `HKDF-SHA256` — defeating passive capture, active MITM ECDH substitution, clock-shift attacks, and in-flight scrubbing of `cdpActive`/`browserProof`, with bit-for-bit Minerva-hardened pure-stdlib P-256 parity in `python/proxysnare.py`.
+- **Static SRI + Full-Closure `guardHash` + Cross-Realm Native Integrity**: Serves immutable content-hashed `/__proxysnare/guard.js?v=<hash12>` with `sha384` SRI (`Cache-Control: public, max-age=31536000, immutable, no-transform`) and verifies a runtime `guardHash` over the entire `__psGuardMain` closure (`SERVER_ECDSA_PUB`, config flags, intrinsic capture, CDP/console-eval, handshake, fetch/XHR wrappers) plus cross-realm native `SubtleCrypto`, `Promise`, iterator, and load-time I/O checks at `/handshake` — while staying 0-FP on Angular `zone.js` (`ZoneAwarePromise`/`ZoneAwareError`) and post-load RUM/CMP wrappers.
+- **Signed Provenance (`PS2|` `X-PS-Ctx`), Active CDP Fingerprinting & DevTools Console Detection**: Signs `(ce, cdp, ug, ga, ik)` inside the per-request HMAC using monotonic clocks and captured intrinsics — detecting DevTools Console / CDP `Runtime.evaluate` `fetch()` calls, active CDP sessions, and (in `paranoid` mode) non-gesture mutations while keeping `balanced`, `strict + allowDevTools: true`, and `strict + blockCdpActive: false` cleanly configurable with zero false positives for human developers, mobile roaming, and screen readers.
+- **Firecrawl & AI-Crawler Defense + 1-Line Unified ProxySnare + VeilBreak Shield (`proxysnare/unified`)**: Blocks `Firecrawl`, `Apify`, `Browserless`, `Stagehand`, `GPTBot`, `ClaudeBot`, `x-firecrawl-*`, etc. by default (`blockAiCrawlers: false` to opt out). `createUnifiedShield()` / `createUnifiedMiddleware()` serves ONE SRI-pinned combined bundle embedding VeilBreak inside ProxySnare's private lexical closure (unreachable from `window` / `Symbol.for` / `MutationObserver`) with zero extra per-request ticket round trips.
+- **Modular Subpath Exports, Bundled `.d.ts`, Replayable Express/Raw-Node Streams & Natural-Language CLI**: Import `proxysnare/presets`, `proxysnare/detector`, `proxysnare/middleware`, `proxysnare/browser-guard`, `proxysnare/unified`, or `proxysnare/nl` with TypeScript declarations; compatible with `express.json()`, `express.urlencoded({ extended: true })`, `express.raw()`, `multer`, `busboy`, `app.set("trust proxy", ...)`, and raw `http.createServer`.
 
 ---
 
@@ -85,27 +85,48 @@ node bin/proxysnare.js protect \
 
 *Secrets can be supplied via `PROXYSNARE_SECRET` or `--secret-file <path>` (preferred over argv flags).*
 
-### 4. Express / Node.js Middleware & Python Stdlib Verifier
+### 4. Unified ProxySnare + VeilBreak Shield (Recommended for Maximum Browser + Anti-Repeater Defense)
+
+Combines **ProxySnare** (anti-Repeater, ECDSA-authenticated ECDH, DevTools Console guard) + **VeilBreak** (15 cross-engine browser physics invariants, active CDP fingerprinting, Firecrawl/headless blocking) with **zero extra per-request ticket round trips**:
+
+```js
+const { createUnifiedShield } = require("proxysnare/unified");
+
+// Single-pass reverse-proxy shield (auto-injects ONE SRI-pinned unified bundle embedding VeilBreak inside ProxySnare's private lexical closure)
+const shield = createUnifiedShield({
+  target: "http://127.0.0.1:3000",
+  mode: "balanced",              // "off" | "monitor" | "balanced" | "strict" | "paranoid"
+  protectedPaths: ["/api", "/checkout"],
+  secret: process.env.PROXYSNARE_SECRET, // required across multi-worker clusters for identical SRI & ECDSA keys
+  exposeDebugHeaders: false,
+});
+await shield.listen(8080);
+```
+
+### 5. Express / Node.js Middleware & Python Stdlib Verifier
 
 ```js
 const express = require("express");
-const { createProxySnareMiddleware } = require("proxysnare/middleware"); // or require("./src/index.js")
+const { createProxySnareMiddleware } = require("proxysnare/middleware"); // or createUnifiedMiddleware from "proxysnare/unified"
 
 const app = express();
+app.set("trust proxy", 1); // automatically honored by ProxySnare & VeilBreak
 
-// Works safely before OR after express.json({ verify }), express.urlencoded(), or express.text()
-app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
-app.use(
-  createProxySnareMiddleware({
-    mode: "strict",              // "off" | "monitor" ("observe") | "balanced" | "strict"
-    protectedPaths: ["/api", "/checkout"],
-    freshnessMs: 8000,
-    trustProxy: ["127.0.0.1", "10.0.0.0/8"],
-    exposeDebugHeaders: false,   // omit X-ProxySnare-Score / reason arrays in production
-    onDetect: (ev) => console.warn("[ProxySnare]", ev.blocked ? "BLOCKED" : "FLAG", ev.reasons),
-  })
-);
-// Include <script src="/__proxysnare/guard.js"></script> in your HTML templates when using direct middleware.
+const ps = createProxySnareMiddleware({
+  mode: "balanced",              // start with "monitor" -> "balanced" -> "strict" -> "paranoid"
+  protectedPaths: ["/api", "/checkout"],
+  allowDevTools: false,          // set true in staging/strict to permit developers with DevTools open
+  gestureExemptPaths: ["/api/heartbeat"], // exempt background POSTs when using mode: "paranoid"
+  secret: process.env.PROXYSNARE_SECRET,
+  exposeDebugHeaders: false,
+  onDetect: (ev) => console.warn("[ProxySnare]", ev.blocked ? "BLOCKED" : "FLAG", ev.reasons),
+});
+
+// Works cleanly BEFORE express.json() / express.urlencoded({ extended: true }) / express.raw() / multer (restores readable stream),
+// OR AFTER express.json({ verify: ps.captureRawBody })!
+app.use(ps);
+app.use(express.json());
+// When using direct middleware, include <script src="/__proxysnare/guard.js?v=..." integrity="..."></script> (or unified.headTags()).
 ```
 
 ```python
@@ -201,20 +222,27 @@ Verified end-to-end against live `mode=strict` reverse-proxy servers (`127.0.0.1
 
 ## Modes & Honest Boundaries
 
-| Mode | Threshold | Freshness Window | PoW Bits | Action | Recommended Use |
-| :--- | :-: | :-: | :-: | :--- | :--- |
-| **`monitor`** *(alias: `observe`)* | `6` *(logs only)* | `15,000 ms` | `0` | Scores, rotates canaries, emits `X-PS-Rehandshake`, never blocks | Initial production rollout & SIEM tuning |
-| **`balanced`** | `>= 6` | `15,000 ms` | `10` | Blocks replays, tampering, `curl` & missing proofs | Consumer apps with slower mobile networks |
-| **`strict`** *(default)* | `>= 4` | `8,000 ms` | `12` | Tightest replay, edit, `curl` & intercept-hold defense | Checkout, auth, high-value browser APIs |
-| **`off`** | Disabled | — | `0` | Pass-through | Local dev / automated API tests |
+Choose the exact availability-vs-security balance for your audience (every knob can also be overridden individually):
 
-*HTTP operational status codes: `403` (blocked / invalid boot token), `413` (request body exceeds `maxBodyBytes`), `429` (per-IP handshake/boot rate limit exceeded), `503` (session or boot-token capacity limit reached — fails closed rather than evicting active sessions).*
+| Preset | Threshold | Freshness | PoW | IP Bind | DevTools / Console | User Gesture on Mutate | Recommended Use |
+| :--- | :-: | :-: | :-: | :-: | :--- | :-: | :--- |
+| **`off`** | Disabled | — | `0` | Off | Allowed | Off | Local dev / automated API test suites |
+| **`monitor`** *(alias: `observe`)* | `6` *(logs only)* | `15 s` | `0` | Off | Allowed | Off | Zero-risk rollout, SIEM tuning & baseline auditing |
+| **`balanced`** | `>= 6` | `15 s` | `10 b` | **Off** *(mobile roaming safe)* | **DevTools allowed** *(zero FP)*; blocks Repeater, tampering, `curl`, Firecrawl & synthetic clicks | Off | **Best default for public consumer/mobile apps** |
+| **`strict`** *(default)* | `>= 4` | `8 s` | `12 b` | On *(auto-rehandshakes on IP roam)* | Blocks active CDP & DevTools Console `fetch()`, SRI + `guardHash` enforced *(pass `allowDevTools: true` or `blockCdpActive: false` in dev/staging)* | Off | Checkout, auth, SaaS & high-value browser APIs |
+| **`paranoid`** | `>= 4` | `5 s` | `14 b` | On | Hard-blocks active CDP & Console `fetch()`, requires signed `X-PS-Ctx` | **On** *(GET/HEAD & `gestureExemptPaths` exempt)* | High-risk financial / anti-cheat / anti-bot mutations |
 
-### Important Security & Operational Caveats
-- **Active MITM Key Substitution & Custom Automation Clients:** `PS_ECDH_V2` ensures no plaintext `sessionKeyHex` ever crosses HTTP, preventing passive capture of `/handshake` from reconstructing the HMAC key and preventing post-handshake JS from reading the non-extractable WebCrypto key. However, because browsers do not pin application-layer ECDH public keys without TLS pinning, an active MITM proxy rewriting public keys during `/handshake` (or a custom client implementing its own `PS_ECDH_V2` + PoW handshake while forging modern browser Fetch Metadata headers) can establish its own separate session. Always enforce server-side authentication, authorization, and business rules alongside ProxySnare.
-- **Secure Context Required:** Browser WebCrypto (`crypto.subtle`) requires `https://` in production (or `http://localhost` / `http://127.0.0.1` locally).
-- **Serialized Protected Requests:** `guard.js` queues concurrent protected requests (`Promise.all`) per tab so the single-step rotating canary never self-blocks.
-- **Single-Process State & Floods:** Default session, boot-token, and nonce stores live in process-local Maps (enable sticky sessions behind multi-worker load balancers), and unique-request floods require a separate rate limiter.
+*HTTP operational status codes: `403` (blocked / invalid boot token / guard mismatch / browser integrity failure), `413` (request body exceeds `maxBodyBytes`), `429` (per-IP boot or handshake rate limit exceeded), `503` (session or boot-token capacity limit reached — fails closed rather than evicting active sessions).*
+
+### Honest Threat-Model Boundaries (Zero Bias)
+- **What v2.1 Mitigates:**
+  - **Bypass 1 (Browser DevTools Console `fetch()`):** Blocked in `strict`/`paranoid` via signed `PS2|` `X-PS-Ctx` stack provenance (using captured monotonic clocks & intrinsics; catches `Error.prepareStackTrace` tampering and `//# sourceURL=` spoofing).
+  - **Bypass 2 (Caido Match & Replace on `/__proxysnare/guard.js`):** Blocked by static `sha384` SRI (`?v=<hash12>`), full-closure runtime `guardHash` over `__psGuardMain`, and cross-realm native `SubtleCrypto` / `Promise` / I/O integrity checks.
+  - **Bypass 3 (Active MITM ECDH Key Substitution):** Blocked by deterministic ECDSA P-256 (`PS_HS_AUTH_V1` + `hsBind`) verified against pinned `SERVER_ECDSA_PUB` before deriving the HKDF key — also defeats in-flight MITM scrubbing of `cdpActive`/`browserProof` and clock shifting.
+  - **Bypass 4 (Standalone 40-line `PS_ECDH_V2` Script & Firecrawl/AI Crawlers):** Defeated by Firecrawl/AI-crawler blocking plus `createUnifiedShield` binding VeilBreak's challenge-bound `VB_HS_V3` real-browser physics + Web Worker + active CDP proof directly into `/handshake`.
+- **Irreducible Local-OS / Trusted-CA Boundary:** No pure-HTTP/JS defense can be "100% unbypassable" against an attacker who controls the client OS, installs their own MITM root CA, AND simultaneously rewrites **both** the HTML response (stripping `integrity="..."` and pinning their own `SERVER_ECDSA_PUB`) **and** `guard.js` — or drives a custom-compiled unmodified browser binary with human-like OS pointer events. Always enforce server-side authentication, authorization, rate limiting, and business invariants alongside ProxySnare.
+- **Secure Context & Multi-Worker Deployment:** Browser WebCrypto (`crypto.subtle`) requires `https://` in production (or `http://localhost` / `http://127.0.0.1` locally). Always set a shared `PROXYSNARE_SECRET` across multi-worker clusters so all workers derive identical `SERVER_ECDSA_PUB`, `guardSri`, `guardVersion`, `guardHash`, and cross-worker stateless boot tokens; enable sticky sessions behind load balancers for process-local active sessions/nonces.
+- **Serialized Protected Requests:** `guard.js` serializes protected requests per tab so the single-step rotating canary never self-blocks (aborting a queued request rejects immediately without breaking serialization). Keep long-lived SSE/streaming endpoints outside `protectedPaths`.
 
 ---
 

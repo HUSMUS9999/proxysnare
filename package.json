@@ -1,13 +1,17 @@
 {
   "name": "proxysnare",
-  "version": "2.0.0",
-  "description": "Zero-dependency HTTP Repeater & Intercepting Proxy defense (PS_ECDH_V2 ephemeral P-256 ECDH + HKDF-SHA256, boot-token PoW, Proof-of-Freshness HMAC-SHA256 + rotating honey-canary middleware, reverse proxy, browser guard, and Python stdlib verifier)",
+  "version": "2.1.0",
+  "description": "Zero-dependency HTTP Repeater, Intercepting Proxy, DevTools & Firecrawl defense (ECDSA-authenticated PS_ECDH_V2, SRI + guardHash integrity, PS2 signed context, adjustable security presets, unified VeilBreak shield, and Python stdlib verifier)",
   "main": "src/index.js",
   "types": "src/index.d.ts",
   "exports": {
     ".": {
       "types": "./src/index.d.ts",
       "default": "./src/index.js"
+    },
+    "./presets": {
+      "types": "./src/presets.d.ts",
+      "default": "./src/presets.js"
     },
     "./detector": {
       "types": "./src/detector.d.ts",
@@ -20,6 +24,10 @@
     "./browser-guard": {
       "types": "./src/browser-guard.d.ts",
       "default": "./src/browser-guard.js"
+    },
+    "./unified": {
+      "types": "./src/unified.d.ts",
+      "default": "./src/unified.js"
     },
     "./nl": {
       "types": "./src/nl.d.ts",
