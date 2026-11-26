@@ -6059,7 +6059,7 @@ pr = v.sign_request(session_key_hex=s["sessionKeyHex"], method="POST", path_with
 r = v.inspect_request(method="POST", url="/api/telemetry/../transfer", body=b"{}", headers={"User-Agent": ${JSON.stringify(CHROME_UA)}, "Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors", "X-PS-Session": s["sessionId"], "X-PS-Seq": "1", "X-PS-Ts": ts, "X-PS-Nonce": "py-trv-01", "X-PS-Canary": s["canary"], "X-PS-Ctx": ctx, "X-PS-Proof": pr})
 assert r.blocked and any(x["code"] == "MUTATION_WITHOUT_USER_GESTURE" for x in r.reasons), f"Python traversal bypass: {r.reasons}"
 ov8 = "/p1,/p2,/p3,/p4,/p5,/p6,/p7,/p8"
-r8 = v.inspect_request(method="GET", url="/public", headers={"User-Agent": ${JSON.stringify(CHROME_UA)}, "X-Original-URL": ov8}, raw_header_lines=[f"User-Agent: {${JSON.stringify(CHROME_UA)}}", f"X-Original-URL: {ov8}"])
+r8 = v.inspect_request(method="GET", url="/public", headers={"User-Agent": ${JSON.stringify(CHROME_UA)}, "X-Original-URL": ov8}, raw_header_lines=["User-Agent: " + ${JSON.stringify(CHROME_UA)}, f"X-Original-URL: {ov8}"])
 assert not r8.blocked, f"8-part X-Original-URL with raw_header_lines MUST NOT double-count over cap=16: {r8.reasons}"`,
     ],
     { encoding: "utf8" }
